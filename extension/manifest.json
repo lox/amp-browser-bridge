@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Amp Browser Bridge",
+  "version": "0.1.0",
+  "minimum_chrome_version": "116",
+  "description": "Lend one tab to Amp through a bridge on this computer.",
+  "permissions": ["debugger", "storage", "tabs", "scripting"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Lend this tab to Amp", "default_popup": "popup.html" }
+}

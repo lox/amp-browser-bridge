@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  body { font: 13px system-ui; width: 300px; margin: 12px; }
+  button { font: inherit; padding: 5px 10px; margin: 6px 6px 0 0; }
+  input[type=text] { font: inherit; width: 140px; }
+  label { display: block; margin-top: 8px; }
+  .muted { color: #6b7280; }
+  .hidden { display: none; }
+  .box { border-top: 1px solid #e5e7eb; margin-top: 10px; padding-top: 8px; }
+</style>
+<div id="status" class="muted">Loading…</div>
+<div id="pair" class="hidden">
+  <p>Pairing code from the bridge (<code>cat ~/.amp-browser-bridge/pairing-code</code>):</p>
+  <input id="code" type="text" placeholder="XXXXX-XXXXX" autocomplete="off"> <button id="connect">Connect</button>
+  <br><button id="reconnect" class="hidden">Reconnect</button>
+</div>
+<div id="controls" class="hidden">
+  <button id="lend">Lend this tab</button>
+  <button id="stop">Stop lending</button>
+  <button id="continue" class="hidden">Continue</button>
+  <div id="permissions" class="box hidden">
+    <label><input id="allowActions" type="checkbox"> Allow clicks, typing and navigation</label>
+    <label><input id="anyOrigin" type="checkbox"> Allow other sites than <span id="origin"></span></label>
+  </div>
+  <div id="lease" class="box hidden">
+    Used by <a id="leaseThread" target="_blank"></a>
+    <br><button id="release">Release to other threads</button>
+  </div>
+</div>
+<p id="error" style="color:#b91c1c"></p>
+<script src="popup.js"></script>
