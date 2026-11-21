@@ -33,7 +33,7 @@ export interface Lease {
 export type Published = { url: string; thread: string; at: string }
 
 type Outcome = { result?: unknown; error?: string; unknown?: boolean }
-type Handoff = { id: string; thread: string; message: string; started: number; ended?: number; outcome?: Outcome; timer?: Timer; waiters: Set<(o: Outcome) => void> }
+type Handoff = { id: string; thread: string; tab?: number; message: string; started: number; ended?: number; outcome?: Outcome; timer?: Timer; waiters: Set<(o: Outcome) => void> }
 type Socket = ServerWebSocket<{ authed: boolean }>
 
 function same(a: string, b: string) {
@@ -102,6 +102,8 @@ export function startBridge(options: BridgeOptions) {
 
   let extension: Socket | null = null
   let tab: unknown = null
+  /** Tabs Amp threads opened themselves, as the extension last reported them. */
+  let agentTabs: { enabled: boolean; tabs: { tab: number; thread: string; title: string; url: string }[] } = { enabled: false, tabs: [] }
   let lease: Lease | null = null
   const pending = new Map<string, { resolve: (o: Outcome) => void; timer: Timer }>()
   const handoffs = new Map<string, Handoff>()
@@ -128,7 +130,7 @@ export function startBridge(options: BridgeOptions) {
     return null
   }
 
-  function command(tool: string, args: unknown): Promise<Outcome> {
+  function command(thread: string, tool: string, args: unknown): Promise<Outcome> {
     const id = randomBytes(8).toString('hex')
     if (!extension) return Promise.resolve({ error: 'The browser extension is not connected to the bridge. Ask the user to open Chrome.' })
     return new Promise((resolve) => {
@@ -137,7 +139,7 @@ export function startBridge(options: BridgeOptions) {
         resolve({ error: `The extension did not answer within ${COMMAND_TIMEOUT_MS / 1000}s; the outcome is unknown.`, unknown: true })
       }, COMMAND_TIMEOUT_MS)
       pending.set(id, { resolve, timer })
-      sendExtension({ type: 'command', id, tool, args })
+      sendExtension({ type: 'command', id, thread, tool, args })
     })
   }
 
@@ -153,7 +155,7 @@ export function startBridge(options: BridgeOptions) {
     setTimeout(() => handoffs.delete(id), 5 * 60_000).unref?.()
   }
 
-  function startHandoff(thread: string, message: string) {
+  function startHandoff(thread: string, message: string, tab?: number) {
     for (const h of handoffs.values()) {
       if (h.outcome) continue
       // The thread lost its wait (a dropped tool call, say) and asks again: wait on the card already shown.
@@ -164,7 +166,7 @@ export function startBridge(options: BridgeOptions) {
     // A command still running could otherwise land on the card once it appears.
     if (pending.size) return { error: 'Wait for the running browser command to finish before handing off.' }
     const id = randomBytes(8).toString('hex')
-    const h: Handoff = { id, thread, message, started: now(), waiters: new Set() }
+    const h: Handoff = { id, thread, tab, message, started: now(), waiters: new Set() }
     handoffs.set(id, h)
     latestHandoff.set(thread, h)
     h.timer = setTimeout(() => {
@@ -172,7 +174,7 @@ export function startBridge(options: BridgeOptions) {
       finishHandoff(id, { error: 'The user did not click Continue within 30 minutes.' })
     }, HANDOFF_TIMEOUT_MS)
     h.timer.unref?.()
-    sendExtension({ type: 'handoff', id, message })
+    sendExtension({ type: 'handoff', id, message, thread, tab })
     return { result: { handoff_id: id } }
   }
 
@@ -213,6 +215,8 @@ export function startBridge(options: BridgeOptions) {
       extension_connected: !!extension,
       paired: !!extensionKey,
       tab,
+      // A thread sees only the tabs it opened, and whether it may open more.
+      agent_tabs: { enabled: agentTabs.enabled, tabs: agentTabs.tabs.filter((t) => t.thread === thread).map(({ thread: _, ...t }) => t) },
       lease: lease && { thread: lease.thread, since: new Date(lease.since).toISOString(), idle_seconds: Math.round((now() - lease.lastUsed) / 1000) },
       pairing_code_active: now() < pairingExpires,
       published,
@@ -245,20 +249,30 @@ export function startBridge(options: BridgeOptions) {
       // any token holder can send any thread ID.
       const thread = req.headers.get('x-amp-thread') ?? ''
       if (!/^T-[0-9a-f-]{36}$/.test(thread)) return Response.json({ error: 'Missing or invalid x-amp-thread header.' }, { status: 400 })
-      const denied = acquire(thread)
-      if (denied) return Response.json({ error: denied }, { status: 409 })
 
       if (url.pathname === '/call') {
-        const body = (await req.json().catch(() => null)) as { tool?: unknown; args?: unknown } | null
+        const body = (await req.json().catch(() => null)) as { tool?: unknown; args?: { tab?: unknown; message?: unknown } } | null
         if (!body || typeof body.tool !== 'string') return Response.json({ error: 'Expected {tool, args}.' }, { status: 400 })
-        if (body.tool === 'handoff') {
-          const text = (body.args as { message?: unknown } | undefined)?.message
-          const message = typeof text === 'string' ? text.slice(0, 500) : 'Your turn'
-          return Response.json(startHandoff(thread, message))
+        const args = body.args ?? {}
+        if (args.tab != null && !Number.isInteger(args.tab)) return Response.json({ error: 'tab must be a tab id from browser_open_tab.' }, { status: 400 })
+        // The lease is for the lent tab. Amp's own tabs belong to the thread that opened them, which
+        // the extension checks.
+        if (body.tool !== 'open_tab' && args.tab == null) {
+          const denied = acquire(thread)
+          if (denied) return Response.json({ error: denied }, { status: 409 })
         }
-        return Response.json(await command(body.tool, body.args ?? {}))
+        if (body.tool === 'handoff') {
+          const message = typeof args.message === 'string' ? args.message.slice(0, 500) : 'Your turn'
+          return Response.json(startHandoff(thread, message, args.tab as number | undefined))
+        }
+        return Response.json(await command(thread, body.tool, args))
       }
       const match = handoffRoute!
+      const h = handoffs.get(match[1])
+      if (h?.tab == null) {
+        const denied = acquire(thread)
+        if (denied) return Response.json({ error: denied }, { status: 409 })
+      } else if (h.thread !== thread) return Response.json({ error: 'This handoff belongs to another thread.' }, { status: 409 })
       if (match[2] && req.method === 'POST') {
         sendExtension({ type: 'cancel_handoff', id: match[1] })
         finishHandoff(match[1], { error: 'The handoff was cancelled.' })
@@ -295,12 +309,13 @@ export function startBridge(options: BridgeOptions) {
           if (extension && extension !== ws) extension.close(4001, 'replaced')
           extension = ws
           tab = message.tab ?? null
+          if (message.agent_tabs) agentTabs = message.agent_tabs
           ws.send(JSON.stringify({ type: 'ready' }))
           sendExtension({ type: 'published', published })
           publishLease()
           // A service worker restart keeps a waiting handoff in session storage; anything else is stale.
           for (const [id, h] of handoffs) {
-            if (!h.outcome && message.handoff !== id) sendExtension({ type: 'handoff', id, message: h.message })
+            if (!h.outcome && message.handoff !== id) sendExtension({ type: 'handoff', id, message: h.message, thread: h.thread, tab: h.tab })
           }
           // A card this bridge isn't waiting for (another Amp process restarted the bridge, say) would
           // otherwise block input forever.
@@ -311,6 +326,7 @@ export function startBridge(options: BridgeOptions) {
           return
         }
         if (message.type === 'tab') tab = message.tab ?? null
+        if (message.type === 'agent_tabs') agentTabs = { enabled: !!message.enabled, tabs: message.tabs ?? [] }
         if (message.type === 'release') {
           lease = null
           publishLease()
@@ -329,6 +345,7 @@ export function startBridge(options: BridgeOptions) {
         if (extension !== ws) return
         extension = null
         tab = null
+        agentTabs = { enabled: false, tabs: [] }
         for (const [id, p] of pending) {
           clearTimeout(p.timer)
           p.resolve({ error: 'The extension disconnected before answering; the outcome is unknown.', unknown: true })

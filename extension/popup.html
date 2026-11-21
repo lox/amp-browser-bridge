@@ -12,6 +12,14 @@
   section .row:first-child { margin-top: 0; }
   #error:empty { display: none; }
   #error { padding: 0 14px 10px; margin: 0; font-size: 12.5px; }
+  .small { font-size: 12px; margin-top: 2px; }
+  #agentTabs { list-style: none; padding: 0; margin: 8px 0 0; }
+  #agentTabs:empty { display: none; }
+  #agentTabs li { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); }
+  #agentTabs li.wait .title { color: var(--wait); font-weight: 600; }
+  #agentTabs .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #agentTabs .thread { font-size: 11.5px; }
+  #agentTabs button { padding: 2px 8px; font-size: 12.5px; }
   footer { padding: 8px 14px; font-size: 12.5px; border-top: 1px solid var(--line); }
 </style>
 <header id="head"><span class="dot"></span><div><div id="status">Loading…</div><div id="detail" class="muted"></div></div></header>
@@ -28,6 +36,12 @@
     <label><input id="allowActions" type="checkbox"> Allow clicks, typing and navigation</label>
     <label><input id="anyOrigin" type="checkbox"> <span>Allow other sites than <span id="origin"></span></span></label>
   </div>
+</section>
+<section id="agent" class="hidden">
+  <label><input id="allowAgentTabs" type="checkbox"> Let Amp open its own tabs</label>
+  <div class="muted small">In the background, in a collapsed Amp group. They close after 10 idle minutes, or when you turn this off.</div>
+  <ul id="agentTabs"></ul>
+  <div class="row"><button id="closeAgentTabs" class="hidden">Close all</button></div>
 </section>
 <section id="lease" class="hidden">
   <div class="muted">Used by <a id="leaseThread" target="_blank"></a></div>

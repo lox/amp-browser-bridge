@@ -1,7 +1,8 @@
 # Amp Browser Bridge
 
 **Lend one Chrome tab to your [Amp](https://ampcode.com) threads, even ones running in an orb in the
-cloud.** The agent sees the page as you do, logins included, and asks before it clicks or types.
+cloud, or let them open background tabs of their own.** The agent sees the page as you do, logins
+included, and asks before it clicks or types.
 When a step needs a person, like a login, a 2FA code or a payment, it hands the tab back to you
 and waits.
 
@@ -20,7 +21,8 @@ Ask things like:
 ## Why it's safe
 
 - **You choose the tab.** The agent works on the one tab you lent, through a fixed set of page
-  actions. It can't open your other tabs or read your cookies or history.
+  actions, and on tabs it opened itself if you let it. It can't touch your other tabs or read your
+  cookies or history.
 - **Read-only until you say otherwise.** Clicking, typing and navigation stay off until you tick a
   box in the popup. Even then, Amp asks you before each action, or once per site if you say so.
 - **It stays on one site.** The tab can't wander off the site you lent it on unless you allow it.
@@ -83,6 +85,23 @@ about it.
   stop lending. On that tab, the toolbar badge shows `ON`, `RUN` while a command runs, and `WAIT`
   when Amp needs you; other tabs show no badge.
 
+### Amp's own tabs
+
+Tick **Let Amp open its own tabs** in the popup, and a thread can open pages it needs without you
+lending one: Amp asks before it opens a site, then the tab opens in the background of the window you
+last used, inside a collapsed green **Amp** group.
+
+- Only the thread that opened a tab can use it. Each thread can have several, while another thread
+  holds the lent tab.
+- Clicks, typing and navigation in them need no extra checkbox, and may go to any site, but Amp still
+  asks before each action, or once per site per thread.
+- They close after 10 minutes without a command, never while one runs or while Amp waits for you.
+  The popup lists them with **Show** and **Close**; turning the setting off closes them all.
+- A handoff in one of them opens its group, shows `WAIT` on the toolbar button of every tab, and the
+  popup says which tab needs you.
+- Lending one of Amp's tabs makes it yours: it gets the lent tab's limits. Cancel on Chrome's
+  "started debugging" bar also takes them back, leaving them open.
+
 If a dialog, banner or overlay covers what the agent wants to click, the click is refused rather
 than hitting whatever is on top.
 
@@ -109,6 +128,7 @@ The common cases:
 | Tool | What it does |
 | --- | --- |
 | `browser_status` | Connection, lent tab, who holds it, whether this thread's last handoff is still waiting or you clicked **Continue**, and what to do next |
+| `browser_open_tab`, `browser_close_tab` | Open a background tab of the thread's own, after your approval, and close it |
 | `browser_snapshot` | Accessibility outline with refs (`e12`) for click and type |
 | `browser_screenshot` | JPEG of the viewport |
 | `browser_scroll` | Scroll by a number of pixels |
@@ -116,6 +136,8 @@ The common cases:
 | `browser_handoff` | Hand the tab to you and wait for **Continue** (up to 30 minutes). If a call is lost while the card is up, calling it again waits for the same card |
 | `browser_bridge_pair` | On the Mac only: open the setup page with a new one-time pairing code |
 | `browser_bridge_publish` | On the Mac only: expose the bridge to your orbs; it republishes itself on every start |
+
+Page tools take an optional `tab` (from `browser_open_tab`); without it they use the lent tab.
 
 ## Security
 
@@ -126,12 +148,17 @@ an email can try to steer it.
   `~/.amp-browser-bridge/token`, mode 600). The extension proves itself with a key it received for a
   one-time pairing code; five wrong codes void the code, and the code never leaves your Mac.
   Through the portal, Amp also requires your sign-in.
-- **What enforces what.** The extension enforces the hard limits: only the tab you lent, read-only
-  until you allow actions, on its own site until you allow others, nothing during a handoff. The
+- **What enforces what.** The extension enforces the hard limits: only the tab you lent and, if you
+  allowed them, tabs Amp opened, the lent tab read-only until you allow actions and on its own site
+  until you allow others, nothing during a handoff. The
   approval prompts in Amp are a convenience on top: they guard the agent's tools, but code running
   in your orb can read `BROWSER_BRIDGE_TOKEN` and call the bridge directly. So keep tabs read-only
-  unless you are watching. Likewise, the one-thread lease keeps threads from interleaving; it is
-  not a security boundary.
+  unless you are watching. Likewise, the one-thread lease and each tab belonging to the thread that
+  opened it keep threads from interleaving; they are not security boundaries.
+- **Amp's own tabs are wider.** With **Let Amp open its own tabs** on, a token holder can open any
+  site in your signed-in browser and click and type there, without the read-only and one-site limits
+  of a lent tab; only the approval prompts stand in the way, and code in an orb can skip those. Keep
+  it off unless you want that.
 - **Refs.** They expire when the page changes, and an element is checked against the snapshot's
   role and name before each action. If the page moves focus while text is typed, the result is
   reported as unknown.

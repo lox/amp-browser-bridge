@@ -7,7 +7,7 @@ function render(s) {
   $("reconnect").classList.toggle("hidden", !s.paired || s.connected || s.bridge !== "found");
   $("controls").classList.toggle("hidden", !s.connected);
   $("continue").classList.toggle("hidden", !s.waiting);
-  $("lend").classList.toggle("hidden", !!s.waiting);
+  $("lend").classList.toggle("hidden", !!s.waiting && s.waitingTab === s.lend?.tabId);
   $("stop").disabled = !s.lend;
   $("permissions").classList.toggle("hidden", !s.lend);
   if (s.lend) {
@@ -15,6 +15,34 @@ function render(s) {
     $("anyOrigin").checked = s.lend.anyOrigin;
     $("origin").textContent = s.lend.origin;
   }
+  // Turning it off and closing tabs work without the bridge, so this shows whenever the browser is paired.
+  $("agent").classList.toggle("hidden", !s.paired);
+  $("allowAgentTabs").checked = !!s.agentTabs?.enabled;
+  const tabs = s.agentTabs?.tabs ?? [];
+  $("closeAgentTabs").classList.toggle("hidden", tabs.length < 2);
+  $("agentTabs").replaceChildren(...tabs.map((t) => {
+    const li = document.createElement("li");
+    li.classList.toggle("wait", t.tab === s.waitingTab);
+    const text = document.createElement("div");
+    text.className = "title";
+    text.textContent = t.tab === s.waitingTab ? `Amp needs you: ${t.title || t.url}` : t.title || t.url;
+    text.title = t.url;
+    const thread = document.createElement("a");
+    thread.className = "thread muted";
+    thread.textContent = `thread …${t.thread.slice(-6)}`;
+    thread.href = `https://ampcode.com/threads/${t.thread}`;
+    thread.target = "_blank";
+    const info = document.createElement("div");
+    info.append(text, thread);
+    const show = document.createElement("button");
+    show.textContent = "Show";
+    show.onclick = () => ask({action: "showTab", tabId: t.tab}).then(() => close());
+    const closeTab = document.createElement("button");
+    closeTab.textContent = "Close";
+    closeTab.onclick = () => ask({action: "closeAgentTab", tabId: t.tab});
+    li.append(info, show, closeTab);
+    return li;
+  }));
   // Release goes through the bridge, so it only shows while connected.
   $("lease").classList.toggle("hidden", !s.connected || !s.lease);
   if (s.lease) {
@@ -26,6 +54,7 @@ function render(s) {
     : s.paired && s.bridge === "found" && s.bridgeError ? ["fail", "Disconnected", "See below."]
     : s.paired ? ["wait", "Connecting to the bridge…", ""]
     : ["fail", "Not paired", "Finish setup to pair this browser."]
+    : s.waiting && s.waitingTab !== s.lend?.tabId ? ["wait", "Amp is waiting for you in one of its tabs", s.waiting]
     : s.waiting ? ["wait", "Amp is waiting for you", s.waiting]
     : s.tab ? ["ok", s.lend.allowActions ? "Lent" : "Lent read-only", s.tab.title || s.tab.url]
     : ["", "Connected", "No tab lent."];
@@ -59,6 +88,8 @@ $("lend").onclick = async () => {
 $("reconnect").onclick = () => ask({action: "reconnect"}).then(() => setTimeout(() => ask({action: "state"}), 800));
 $("stop").onclick = () => ask({action: "stop"});
 $("continue").onclick = () => ask({action: "continue"});
+$("allowAgentTabs").onchange = () => ask({action: "agentTabs", enabled: $("allowAgentTabs").checked});
+$("closeAgentTabs").onclick = () => ask({action: "closeAgentTabs"});
 $("release").onclick = () => ask({action: "release"});
 $("allowActions").onchange = $("anyOrigin").onchange = () =>
   ask({action: "permissions", allowActions: $("allowActions").checked, anyOrigin: $("anyOrigin").checked});
