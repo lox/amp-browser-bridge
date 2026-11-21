@@ -66,9 +66,8 @@ async function ownedTab(tabId, record) {
   const tab = await chrome.tabs.get(Number(tabId)).catch(() => null);
   const group = tab && record.groupId >= 0 && tab.groupId === record.groupId ? await chrome.tabGroups.get(tab.groupId).catch(() => null) : null;
   if (group?.title === GROUP_TITLE && group.color === "green") return tab;
-  await updateAgentTabs((tabs) => {
-    if (tabs[tabId]?.groupId === record.groupId) delete tabs[tabId];
-  });
+  const stale = await updateAgentTabs((tabs) => tabs[tabId]?.groupId === record.groupId);
+  if (stale) await forgetAgentTab(Number(tabId));
   return null;
 }
 
@@ -180,9 +179,10 @@ async function run(message) {
       send({type: "result", id: message.id, result: await openTab(message.thread, args.url, effects)});
       return;
     }
-    const policy = await policyFor(message.thread, args.tab);
+    const policy = await policyFor(message.thread, args.tab, true);
     tabId = policy.tabId;
-    running.set(tabId, (running.get(tabId) || 0) + 1);
+    // A reload of the extension detaches the debugger; attach again on first use.
+    if (policy.agent) await attach(tabId);
     await badge();
     if (message.tool === "close_tab" && (await session.get("handoff"))?.tabId === tabId) throw new Error("The user has the tab for a handoff. Wait for browser_handoff to return.");
     const result = message.tool === "close_tab" && policy.agent
@@ -193,10 +193,13 @@ async function run(message) {
     send({type: "result", id: message.id, error: String(error?.message || error).slice(0, 1000), unknown: effects.sent});
   } finally {
     if (tabId != null) {
-      await updateAgentTabs((tabs) => {
+      // A tab the user closed, or turned Amp's tabs off for, while this ran closes now.
+      const close = await updateAgentTabs((tabs) => {
+        running.set(tabId, running.get(tabId) - 1);
         if (tabs[tabId]) tabs[tabId].lastUsed = Date.now();
+        return !!tabs[tabId]?.closing && !(running.get(tabId) > 0);
       });
-      running.set(tabId, running.get(tabId) - 1);
+      if (close) await closeAgentTab(tabId).catch(() => {});
       await badge();
     }
   }
@@ -207,21 +210,25 @@ async function run(message) {
  * or one of Amp's own tabs, which only the thread that opened it may use. The user widened those
  * by letting Amp open tabs at all; the plugin still asks before each action or once per site.
  */
-async function policyFor(thread, tab) {
+async function policyFor(thread, tab, count = false) {
   if (tab == null) {
     const lend = await getLend();
     if (!lend) throw new Error("No tab is lent. Ask the user to open the page and click Lend this tab in the extension, or open a tab of your own with browser_open_tab.");
+    if (count) running.set(lend.tabId, (running.get(lend.tabId) || 0) + 1);
     return lend;
   }
   const record = Number.isInteger(tab) ? (await getAgentTabs())[tab] : null;
   if (!record || !await agentTabsAllowed() || !await ownedTab(tab, record)) throw new Error(`Tab ${tab} is not one of Amp's open tabs. Open one with browser_open_tab.`);
   if (record.thread !== thread) throw new Error(`Tab ${tab} belongs to another thread. Open your own with browser_open_tab.`);
   const tabId = tab;
-  await updateAgentTabs((tabs) => {
-    if (tabs[tabId]) tabs[tabId].lastUsed = Date.now();
+  // Under the same lock as closing, so a tab is never claimed for closing as a command starts on it.
+  const usable = await updateAgentTabs((tabs) => {
+    if (!tabs[tabId] || tabs[tabId].closing) return false;
+    tabs[tabId].lastUsed = Date.now();
+    if (count) running.set(tabId, (running.get(tabId) || 0) + 1);
+    return true;
   });
-  // A reload of the extension detaches the debugger; attach again on first use.
-  await attach(tabId);
+  if (!usable) throw new Error(`Tab ${tab} is closing. Open another with browser_open_tab.`);
   return {tabId, allowActions: true, anyOrigin: true, agent: true};
 }
 
@@ -536,8 +543,7 @@ async function attach(tabId) {
   try {
     await chrome.debugger.attach({tabId}, "1.3");
   } catch (error) {
-    if (String(error.message).includes("Another debugger is already attached")) return;
-    throw error;
+    if (!String(error.message).includes("Another debugger is already attached")) throw error;
   }
   await cdp({tabId}, "Page.enable");
   await cdp({tabId}, "Accessibility.enable");
@@ -660,7 +666,9 @@ async function forgetAgentTab(tabId) {
   if (handoff?.tabId === tabId) {
     send({type: "result", id: handoff.id, error: "The tab was closed or taken back by the user."});
     await session.remove("handoff");
+    await removeCard(tabId);
   }
+  if (tabId !== (await getLend())?.tabId) await chrome.debugger.detach({tabId}).catch(() => {});
   // null, not "": a per-tab "" would hide the WAIT every tab shows during a background handoff.
   await chrome.action.setBadgeText({tabId, text: null}).catch(() => {});
   await sendAgentTabs();
@@ -676,8 +684,19 @@ async function closeAgentTab(tabId) {
   return {closed: tabId};
 }
 
+/** Closes one of Amp's tabs now, or, if a command is running on it, as soon as that command ends. */
+async function closeWhenIdle(tabId) {
+  tabId = Number(tabId);
+  const now = await updateAgentTabs((tabs) => {
+    if (!tabs[tabId]) return false;
+    tabs[tabId].closing = true;
+    return !(running.get(tabId) > 0);
+  });
+  if (now) await closeAgentTab(tabId);
+}
+
 async function closeAllAgentTabs() {
-  for (const id of Object.keys(await getAgentTabs())) await closeAgentTab(id).catch(() => {});
+  for (const id of Object.keys(await getAgentTabs())) await closeWhenIdle(id).catch(() => {});
 }
 
 async function setAgentTabsAllowed(enabled) {
@@ -697,13 +716,17 @@ async function showTab(tabId) {
 
 /** Closes Amp's tabs that no command touched for AGENT_TAB_IDLE_MS, never one in use or waiting for the user. */
 async function closeIdleAgentTabs() {
-  const handoff = await session.get("handoff");
-  for (const [id, record] of Object.entries(await getAgentTabs())) {
+  for (const id of Object.keys(await getAgentTabs())) {
     const tabId = Number(id);
-    if (running.get(tabId) > 0 || handoff?.tabId === tabId) continue;
-    // Read again: a command may have finished since the list was read.
-    const now = (await getAgentTabs())[tabId];
-    if (now && Date.now() - now.lastUsed >= AGENT_TAB_IDLE_MS) await closeAgentTab(tabId).catch(() => {});
+    const handoff = await session.get("handoff");
+    // Claimed under the record's lock: a command that starts after this sees the tab closing.
+    const claimed = await updateAgentTabs((tabs) => {
+      const record = tabs[tabId];
+      if (!record || record.closing || running.get(tabId) > 0 || handoff?.tabId === tabId || Date.now() - record.lastUsed < AGENT_TAB_IDLE_MS) return false;
+      record.closing = true;
+      return true;
+    });
+    if (claimed) await closeAgentTab(tabId).catch(() => {});
   }
 }
 
@@ -747,7 +770,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     if (message.action === "stop") return stop();
     if (message.action === "permissions") return setPermissions({allowActions: !!message.allowActions, anyOrigin: !!message.anyOrigin});
     if (message.action === "agentTabs") return setAgentTabsAllowed(!!message.enabled);
-    if (message.action === "closeAgentTab") return closeAgentTab(message.tabId);
+    if (message.action === "closeAgentTab") return closeWhenIdle(message.tabId);
     if (message.action === "closeAgentTabs") return closeAllAgentTabs();
     if (message.action === "showTab") return showTab(message.tabId);
     if (message.action === "release") {
