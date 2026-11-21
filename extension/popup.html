@@ -1,32 +1,38 @@
 <!doctype html>
 <meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
 <style>
-  body { font: 13px system-ui; width: 300px; margin: 12px; }
-  button { font: inherit; padding: 5px 10px; margin: 6px 6px 0 0; }
-  input[type=text] { font: inherit; width: 140px; }
-  label { display: block; margin-top: 8px; }
-  .muted { color: #6b7280; }
-  .hidden { display: none; }
-  .box { border-top: 1px solid #e5e7eb; margin-top: 10px; padding-top: 8px; }
+  body { width: 320px; background: var(--card); }
+  header { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  header .dot { flex: none; }
+  #status { font-weight: 600; }
+  #detail { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 250px; }
+  section { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  section:last-of-type { border-bottom: 0; }
+  section .row:first-child { margin-top: 0; }
+  #error:empty { display: none; }
+  #error { padding: 0 14px 10px; margin: 0; font-size: 12.5px; }
+  footer { padding: 8px 14px; font-size: 12.5px; border-top: 1px solid var(--line); }
 </style>
-<div id="status" class="muted">Loading…</div>
-<div id="pair" class="hidden">
-  <p>Pairing code from the bridge (<code>cat ~/.amp-browser-bridge/pairing-code</code>):</p>
-  <input id="code" type="text" placeholder="XXXXX-XXXXX" autocomplete="off"> <button id="connect">Connect</button>
-  <br><button id="reconnect" class="hidden">Reconnect</button>
-</div>
-<div id="controls" class="hidden">
-  <button id="lend">Lend this tab</button>
-  <button id="stop">Stop lending</button>
-  <button id="continue" class="hidden">Continue</button>
-  <div id="permissions" class="box hidden">
+<header id="head"><span class="dot"></span><div><div id="status">Loading…</div><div id="detail" class="muted"></div></div></header>
+<section id="setup" class="hidden">
+  <div class="row"><button id="openSetup" class="primary">Finish setup</button><button id="reconnect" class="hidden">Reconnect</button></div>
+</section>
+<section id="controls" class="hidden">
+  <div class="row">
+    <button id="lend" class="primary">Lend this tab</button>
+    <button id="stop">Stop lending</button>
+    <button id="continue" class="primary hidden">Continue</button>
+  </div>
+  <div id="permissions" class="hidden">
     <label><input id="allowActions" type="checkbox"> Allow clicks, typing and navigation</label>
-    <label><input id="anyOrigin" type="checkbox"> Allow other sites than <span id="origin"></span></label>
+    <label><input id="anyOrigin" type="checkbox"> <span>Allow other sites than <span id="origin"></span></span></label>
   </div>
-  <div id="lease" class="box hidden">
-    Used by <a id="leaseThread" target="_blank"></a>
-    <br><button id="release">Release to other threads</button>
-  </div>
-</div>
-<p id="error" style="color:#b91c1c"></p>
+</section>
+<section id="lease" class="hidden">
+  <div class="muted">Used by <a id="leaseThread" target="_blank"></a></div>
+  <div class="row"><button id="release">Release to other threads</button></div>
+</section>
+<p id="error" class="error"></p>
+<footer><a href="#" id="setupLink">Setup and status</a></footer>
 <script src="popup.js"></script>

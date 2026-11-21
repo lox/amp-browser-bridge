@@ -12,6 +12,13 @@ let heartbeat = null;
 let reconnectTimer = null;
 let lastError = "";
 let running = 0;
+// A pairing code is kept until the bridge accepts or rejects it, so a bridge that is still starting
+// doesn't lose it. pairError says why the last code failed.
+let pendingCode = "";
+let pairError = "";
+// What the bridge last said about being published to orbs: undefined until it says (older bridges
+// never do), null for not published, or {url, thread, at}.
+let published;
 
 const session = {
   get: async (key) => (await chrome.storage.session.get(key))[key] ?? null,
@@ -46,21 +53,29 @@ function send(message) {
 async function connect(code) {
   clearTimeout(reconnectTimer);
   const {key} = await chrome.storage.local.get("key");
+  if (code) {
+    pendingCode = code;
+    pairError = "";
+  }
+  code = pendingCode || undefined;
   if (!key && !code) return;
   if (socket) {
     socket.onclose = null;
     socket.close();
   }
   ready = false;
+  published = undefined;
   const ws = new WebSocket(BRIDGE);
   socket = ws;
   ws.onopen = async () => ws.send(JSON.stringify({type: "hello", key, code, tab: await tabInfo(), handoff: (await session.get("handoff"))?.id}));
   ws.onmessage = async (event) => {
     const message = JSON.parse(event.data);
     if (message.type === "paired") await chrome.storage.local.set({key: message.key});
+    if (message.type === "published") published = message.published ?? null;
     if (message.type === "ready") {
       ready = true;
       lastError = "";
+      pendingCode = "";
       clearInterval(heartbeat);
       heartbeat = setInterval(() => send({type: "ping"}), 20_000);
       // A Continue click made while the bridge was unreachable is delivered now.
@@ -77,12 +92,16 @@ async function connect(code) {
     ready = false;
     clearInterval(heartbeat);
     if (event.code === 1008) {
-      lastError = "The bridge rejected this browser. Enter a new pairing code.";
+      pairError = code
+        ? "The bridge rejected this pairing code. Codes work once, for 10 minutes, and five wrong tries void them."
+        : "The bridge no longer knows this browser. Pair it again.";
+      pendingCode = "";
+      lastError = "The bridge rejected this browser. Pair it again.";
       chrome.storage.local.remove("key");
       return;
     }
     if (event.code === 4001) {
-      lastError = "Another browser connected to the bridge. Open this popup and click Reconnect to take over.";
+      lastError = "Another browser connected to the bridge. Click Reconnect to take over.";
       return;
     }
     lastError = "The bridge isn't reachable on 127.0.0.1:19989; retrying.";
@@ -440,8 +459,10 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       if (!sender.tab || sender.tab.id === (await getLend())?.tabId) await continueHandoff();
       return;
     }
-    if (sender.tab) return; // everything else comes only from the popup
-    if (message.action === "pair") return connect(message.code);
+    // Everything else comes only from the extension's own pages (the popup and setup.html), never
+    // from the card's isolated world on the lent tab.
+    if (sender.tab && !sender.url?.startsWith(chrome.runtime.getURL(""))) return;
+    if (message.action === "pair") return connect(String(message.code || "").trim());
     if (message.action === "reconnect") return connect();
     if (message.action === "lend") return lend(message.tabId);
     if (message.action === "stop") return stop();
@@ -460,8 +481,27 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
 async function state() {
   const {key} = await chrome.storage.local.get("key");
   const [lendState, handoff, lease] = await Promise.all([getLend(), session.get("handoff"), session.get("lease")]);
-  return {paired: !!key, connected: ready, bridgeError: lastError, lend: lendState, tab: await tabInfo(), waiting: handoff?.message ?? null, lease};
+  return {
+    paired: !!key, connected: ready, bridge: ready ? "connected" : await probe(), bridgeError: lastError,
+    pairing: !!pendingCode, pairError, published,
+    lend: lendState, tab: await tabInfo(), waiting: handoff?.message ?? null, lease,
+  };
 }
+
+/** Whether something answers on the bridge's port when the extension isn't connected to it. */
+async function probe() {
+  try {
+    const res = await fetch(BRIDGE.replace("ws:", "http:").replace("/ext", "/status"), {signal: AbortSignal.timeout(1500)});
+    // The bridge answers 401 "unauthorized" without its token.
+    return res.status === 401 && (await res.text()) === "unauthorized" ? "found" : "other";
+  } catch {
+    return "missing";
+  }
+}
+
+chrome.runtime.onInstalled.addListener(({reason}) => {
+  if (reason === "install") chrome.tabs.create({url: chrome.runtime.getURL("setup.html")});
+});
 
 connect();
 badge();

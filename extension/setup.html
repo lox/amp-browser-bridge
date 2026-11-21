@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<title>Set up Amp Browser Bridge</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  main { max-width: 620px; margin: 48px auto; padding: 0 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 6px 20px; margin-top: 20px; }
+  footer { margin-top: 16px; font-size: 13px; }
+</style>
+<main>
+  <h1>Amp Browser Bridge<small>Lend one Chrome tab to your Amp threads. This page updates as you go.</small></h1>
+  <div class="card">
+    <ol class="steps">
+      <li class="step" id="bridge">
+        <span class="dot"></span>
+        <div><h2>Bridge found on 127.0.0.1:19989</h2><div class="detail"></div></div>
+      </li>
+      <li class="step" id="paired">
+        <span class="dot"></span>
+        <div>
+          <h2>Paired with this browser</h2><div class="detail"></div>
+          <div id="pairForm" class="row hidden">
+            <input id="code" type="text" placeholder="XXXXX-XXXXX" autocomplete="off" spellcheck="false">
+            <button id="connect" class="primary">Pair</button>
+          </div>
+          <div id="reconnectRow" class="row hidden"><button id="reconnect">Reconnect</button></div>
+        </div>
+      </li>
+      <li class="step" id="published">
+        <span class="dot"></span>
+        <div><h2>Published to your orbs</h2><div class="detail"></div></div>
+      </li>
+      <li class="step" id="lent">
+        <span class="dot"></span>
+        <div><h2>A tab is lent</h2><div class="detail"></div></div>
+      </li>
+    </ol>
+  </div>
+  <footer class="muted">Nothing listens on your network: Chrome only talks to 127.0.0.1.
+    <a href="https://github.com/lox/amp-browser-bridge#readme" target="_blank">How it works</a></footer>
+</main>
+<script src="setup.js"></script>

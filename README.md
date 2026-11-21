@@ -41,7 +41,10 @@ Setup happens in Amp threads and Chrome; you don't need a terminal.
    ones, so there is no one-line command yet.)
 
 2. **Load the extension.** Open `chrome://extensions`, turn on **Developer mode**, choose **Load
-   unpacked**, and pick this repository's `extension/` folder.
+   unpacked**, and pick this repository's `extension/` folder. Chrome opens the extension's setup
+   page: a checklist that follows the next steps live (bridge found, paired, published to orbs, tab
+   lent) and says what to do at each one that fails. Open it again from the popup's **Setup and
+   status** link.
 
 3. **Pair it.** In an Amp thread on your Mac, ask *"pair the browser extension"*. The
    `browser_bridge_pair` tool makes a one-time code (valid for 10 minutes) and opens the
@@ -138,6 +141,10 @@ session storage, so a service worker restart keeps the lend, the snapshot refs a
 handoff. The bridge tells the extension where it is published (`~/.amp-browser-bridge/published.json`:
 portal URL, owning thread and time, never the token), so the setup page can show it. You can also
 run the bridge without Amp: `bun plugin/host.ts`.
+
+The setup page (`extension/setup.html`) finds the bridge by its `401` answer on
+`http://127.0.0.1:19989/status`, and learns about publishing from a
+`{type: "published", published: {url, thread, at} | null}` message the bridge sends after `ready`.
 
 ## Develop
 
