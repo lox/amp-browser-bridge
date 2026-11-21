@@ -48,7 +48,7 @@ function render(s) {
   else {
     const {url, thread} = s.published;
     step("published", "ok", "Orbs reach this browser" +
-      (url ? html` through <code>${new URL(url).host}</code>` : "") +
+      (url ? html` through <code>${url}</code>` : "") +
       (thread ? html`. The portal belongs to <a href="https://ampcode.com/threads/${thread}" target="_blank">this thread</a>; keep it unarchived.` : "."));
   }
 
