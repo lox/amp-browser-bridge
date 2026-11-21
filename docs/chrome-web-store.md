@@ -189,6 +189,12 @@ themselves in an "Amp" tab group, through…*
   Keeps the pairing key that identifies this browser to the user's own bridge in local storage, and the tabs Amp works in, their permissions and any waiting handoff in session storage, so a service worker restart doesn't drop them. Nothing is synced or sent elsewhere.
   ```
 
+- **alarms** (†)
+
+  ```text copy Copy alarms
+  Runs a check once a minute that closes tabs an Amp thread opened itself once no command has used them for 10 minutes, so they don't pile up in the user's window. It never closes a tab the user lent, one with a command running, or one waiting for the user. An alarm is needed because Chrome stops the extension's service worker when idle, which would cancel an ordinary timer.
+  ```
+
 - **Host permissions** (`http://*/*`, `https://*/*`)
 
   ```text copy Copy Host Permissions
