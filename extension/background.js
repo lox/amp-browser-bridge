@@ -500,6 +500,10 @@ async function clearHandoff(id) {
 async function continueHandoff() {
   const handoff = await session.get("handoff");
   if (!handoff) return;
+  // The user may have had the tab for longer than the idle limit; give the thread a fresh window.
+  await updateAgentTabs((tabs) => {
+    if (tabs[handoff.tabId]) tabs[handoff.tabId].lastUsed = Date.now();
+  });
   await removeCard(handoff.tabId);
   // Keep the answer until the bridge has it; it's sent again once the connection is back.
   if (!send({type: "result", id: handoff.id, result: {continued: true, tab: await tabInfo()}})) {
@@ -745,12 +749,23 @@ chrome.debugger.onDetach.addListener(async ({tabId}, reason) => {
   // Cancel on Chrome's "started debugging" bar takes Amp's tabs back too; they stay open as yours.
   if (reason === "canceled_by_user" && (await getAgentTabs())[tabId]) await forgetAgentTab(tabId);
 });
+// A renamed or recoloured Amp group is the user's, and so are its tabs.
+chrome.tabGroups.onUpdated.addListener(async (group) => {
+  for (const [id, record] of Object.entries(await getAgentTabs())) {
+    if (record.groupId === group.id) await ownedTab(id, record);
+  }
+});
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   if (tabId === (await getLend())?.tabId) return stop();
   if ((await getAgentTabs())[tabId]) await forgetAgentTab(tabId);
 });
 chrome.tabs.onUpdated.addListener(async (tabId, change) => {
   if (change.status === "complete" && tabId === (await session.get("handoff"))?.tabId) await injectCard();
+  // Dragged out of the Amp group: the tab is the user's at once, even mid-command.
+  if ("groupId" in change) {
+    const record = (await getAgentTabs())[tabId];
+    if (record) await ownedTab(tabId, record);
+  }
   if (!change.url && !change.title) return;
   if (tabId === (await getLend())?.tabId) send({type: "tab", tab: await tabInfo()});
   else if ((await getAgentTabs())[tabId]) await sendAgentTabs();
