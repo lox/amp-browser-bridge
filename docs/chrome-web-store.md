@@ -180,7 +180,7 @@ themselves in an "Amp" tab group, through…*
 - **scripting**
 
   ```text copy Copy scripting
-  Shows and removes the handoff card ("Amp needs you: … Continue") on the tab Amp is working in, in an isolated world and a closed shadow root, and accepts only a trusted click, so the page can neither read the card nor press Continue itself.
+  Shows and removes the handoff card ("Amp needs you: … Continue") on the tab Amp is working in, in an isolated world and a closed shadow root, and accepts only a trusted click, so the page can neither read the card nor press Continue itself. After a navigation or snapshot it also reads the page's title, the start of its text and the addresses of its frames and scripts, in an isolated world, to tell the thread when the page is a bot check or block page it should hand to the user instead of retrying.
   ```
 
 - **storage**
