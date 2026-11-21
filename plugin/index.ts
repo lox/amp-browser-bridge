@@ -171,7 +171,7 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
     if (!tab.allow_actions) throw new Error('This tab is lent read-only. Ask the user to turn on "Allow clicks, typing and navigation" in the extension popup.')
   }
   let url: URL | null = null
-  let d: { role?: string; name?: string; url: string; secret?: boolean } | null = null
+  let d: { role?: string; name?: string; url: string; secret?: boolean; doc?: string } | null = null
   if (tool === 'navigate' || tool === 'open_tab') {
     try {
       url = new URL(String(input.url))
@@ -181,6 +181,8 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
   } else {
     // Without a ref (press on whatever has focus), describe returns only the page's URL.
     d = await call(target, ctx, 'describe', { ref: input.ref, tab: input.tab })
+    // A key for whatever has focus goes only to the page the user approved it on.
+    if (tool === 'press' && !input.ref && d?.doc) input.doc = d.doc
   }
   // An allowance covers one thread on one site: the page's current site, or where navigation goes.
   const site = url ? url.origin : new URL(d!.url).origin

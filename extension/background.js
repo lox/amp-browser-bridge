@@ -333,7 +333,7 @@ async function execute(lend, tool, args, effects) {
     case "click": return click(target, lend, args.ref, effects);
     case "type": return type(target, lend, args.ref, String(args.text ?? ""), args.submit === true, effects);
     case "fill": return fill(target, lend, args.ref, String(args.value ?? ""), args.submit === true, effects);
-    case "press": return press(target, lend, args.ref, args.key, effects);
+    case "press": return press(target, lend, args.ref, args.key, args.doc, effects);
     case "select": return select(target, lend, args.ref, String(args.value ?? ""), effects);
     case "navigate": return navigate(target, lend, args.url, effects);
     default: throw new Error(`Unknown tool: ${tool}`);
@@ -459,8 +459,9 @@ function isSecret() {
 }
 
 async function describe(target, lend, tab, ref) {
-  // Without a ref (a key pressed on whatever has focus) the page is all there is to describe.
-  if (!ref) return {url: tab.url};
+  // Without a ref (a key pressed on whatever has focus) the page is all there is to describe; its
+  // document ID lets press refuse a key approved for a page that has since navigated.
+  if (!ref) return {url: tab.url, doc: await documentID(target, lend)};
   const entry = await resolveRef(target, lend, ref);
   return {ref, role: entry.role, name: entry.name, url: tab.url, secret: await isolated(target, entry.backendNodeId, isSecret)};
 }
@@ -536,8 +537,11 @@ async function type(target, lend, ref, text, submit, effects) {
 }
 
 async function fill(target, lend, ref, value, submit, effects) {
+  // Checked before the value goes in too, so a page that turns a password field into a text field
+  // as you type can't make the result show it.
+  const before = await isolated(target, (await resolveRef(target, lend, ref)).backendNodeId, isSecret);
   const backendNodeId = await replaceText(target, lend, ref, value, submit, effects);
-  const secret = await isolated(target, backendNodeId, isSecret);
+  const secret = before || await isolated(target, backendNodeId, isSecret);
   return {filled: ref, value: secret ? `(hidden: ${[...value].length} characters)` : value.slice(0, 80), submitted: submit};
 }
 
@@ -581,8 +585,9 @@ async function sendKey(target, event) {
   await cdp(target, "Input.dispatchKeyEvent", {...up, type: "keyUp"});
 }
 
-async function press(target, lend, ref, key, effects) {
+async function press(target, lend, ref, key, doc, effects) {
   const event = parseKey(key);
+  if (!ref && doc != null && await documentID(target, lend) !== doc) throw new Error("The page changed since this key press was approved, so no key was pressed. Take a new snapshot.");
   if (ref) {
     const {backendNodeId} = await resolveRef(target, lend, ref);
     await uncovered(target, backendNodeId, ref);
@@ -619,8 +624,8 @@ async function select(target, lend, ref, value, effects) {
   const changed = await isolated(target, backendNodeId, function (want) {
     const option = this.options[want.index];
     if (!option || option.value !== want.value) return false;
-    if (this.multiple) option.selected = true;
-    else this.selectedIndex = want.index;
+    // Like a plain click, this leaves only this option selected, in a multi-select too.
+    this.selectedIndex = want.index;
     this.dispatchEvent(new Event("input", {bubbles: true, composed: true}));
     this.dispatchEvent(new Event("change", {bubbles: true}));
     return true;
