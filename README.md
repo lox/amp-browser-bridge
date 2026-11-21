@@ -29,7 +29,10 @@ Ask things like:
 - **You take over for secrets.** During a handoff the agent can't see or touch the tab, so it never
   sees what you type. Only your real click on **Continue** gives it back.
 - **Nothing is open to your network.** The bridge listens on `127.0.0.1` only. Orbs reach it
-  through an Amp portal that needs your Amp sign-in and a secret token.
+  through an Amp portal that needs your Amp sign-in and a signature made with a secret token.
+- **No secrets on the wire.** The extension and the bridge prove to each other that they share a
+  key before the extension does anything, so a program that takes the bridge's port can't drive
+  your tab.
 - **Stop anytime.** Click **Stop lending**, close the tab, or cancel Chrome's "started debugging"
   bar.
 
@@ -120,6 +123,11 @@ The common cases:
 - **Pairing didn't happen.** If Chrome wasn't running, the setup page may say it was blocked;
   reload it. Or copy the code from `~/.amp-browser-bridge/pairing-code` into the setup page. Codes
   last 10 minutes.
+- **"The extension was updated and now pairs in a safer way".** Browsers paired before the
+  extension proved its key with a handshake need to pair once more. Update the plugin on your Mac
+  too, then ask Amp to *"pair the browser extension"*.
+- **"Something on 127.0.0.1:19989 could not prove it is your bridge".** Another program holds the
+  bridge's port, and the extension won't talk to it. Quit that program, then restart the Amp app.
 - **Orbs can't reach the tab.** Ask *"publish the browser bridge"* again from a thread on your Mac.
   Orbs that were already running need `amp orb restart-processes` to pick up a new address.
 
@@ -144,10 +152,27 @@ Page tools take an optional `tab` (from `browser_open_tab`); without it they use
 The agent works in a browser you are signed in to, so treat what it reads as untrusted: a page or
 an email can try to steer it.
 
-- **Who can drive the tab.** HTTP calls need `BROWSER_BRIDGE_TOKEN` (stored in
-  `~/.amp-browser-bridge/token`, mode 600). The extension proves itself with a key it received for a
-  one-time pairing code; five wrong codes void the code, and the code never leaves your Mac.
-  Through the portal, Amp also requires your sign-in.
+- **Who can drive the tab.** HTTP calls are signed with `BROWSER_BRIDGE_TOKEN` (stored in
+  `~/.amp-browser-bridge/token`, mode 600): each request carries an HMAC of its method, path,
+  thread and body, a time within five minutes of the bridge's clock and a nonce the bridge accepts
+  only once, and the bridge signs its answers the same way. The token itself is never sent, so a
+  program that takes port 19989 while the bridge isn't running can't capture it, and the plugin
+  rejects answers it didn't sign. Through the portal, Amp also requires your sign-in.
+- **Pairing.** A pairing code works once, within 10 minutes, and five wrong codes void it. The
+  browser exchanges it for a random key of its own over a fresh key agreement (ECDH, with the code
+  stretched by PBKDF2), so neither the code nor the key crosses the connection. On every connection
+  both sides prove they hold the key with an HMAC over fresh nonces from each side, the bridge
+  first; the extension sends nothing about your tab and obeys nothing until the bridge has proved
+  it. So a program that grabs the port first learns nothing it can use and can't drive your browser.
+  The extension link accepts only this extension's ID, dialled as `127.0.0.1` or `localhost`, which
+  turns away web pages, other extensions and DNS rebinding; the HTTP API refuses cross-site browser
+  requests. Keys paired before this handshake had crossed the connection in plain text, so they are
+  dropped and the browser pairs again.
+- **What that does not cover.** Programs running as you can read `~/.amp-browser-bridge` and
+  Chrome's storage, so they can do anything you can. While another program holds port 19989 it
+  sees what threads ask the bridge (tool names and arguments such as text to type), though it can't
+  act on them or answer as the bridge. Such a program can also make the extension forget its key
+  by refusing it, so you pair again.
 - **What enforces what.** The extension enforces the hard limits: only the tab you lent and, if you
   allowed them, tabs Amp opened, the lent tab read-only until you allow actions and on its own site
   until you allow others, nothing during a handoff. The
@@ -191,7 +216,9 @@ starts, re-registering the portal through the same thread and updating `BROWSER_
 address changed. The address depends on the directory the `amp` CLI runs in, so the plugin always
 runs it from `~/.amp-browser-bridge`, and the URL stays the same across restarts and plugin updates.
 
-The extension (`extension/`) attaches Chrome's debugger to the lent tab only. Its state lives in
+The extension (`extension/`) attaches Chrome's debugger to the lent tab only. Its half of the
+pairing handshake is `extension/pairing.js`; the bridge's half is in `plugin/host.ts`, and the
+tests run the two against each other. Its state lives in
 session storage, so a service worker restart keeps the lend, the snapshot refs and a waiting
 handoff. The bridge tells the extension where it is published (`~/.amp-browser-bridge/published.json`:
 portal URL, owning thread and time, never the token), so the setup page can show it. You can also
