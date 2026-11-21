@@ -82,7 +82,9 @@ async function call(target: Target, ctx: PluginToolContext, tool: string, args: 
 // ---- Publishing and pairing on the Mac ----
 
 async function ampCLI(args: string[], stdin?: string) {
-  const proc = Bun.spawn(['amp', ...args], { stdin: stdin === undefined ? 'ignore' : new Blob([stdin]), stdout: 'pipe', stderr: 'pipe' })
+  // A runner portal's hostname depends on the directory `amp orb portal` runs in. The plugin's own
+  // directory changes with every plugin version, so run from the bridge's directory to keep the URL.
+  const proc = Bun.spawn(['amp', ...args], { cwd: dir, stdin: stdin === undefined ? 'ignore' : new Blob([stdin]), stdout: 'pipe', stderr: 'pipe' })
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
   if (code !== 0) throw new Error(`amp ${args.slice(0, 3).join(' ')} failed: ${(err || out).trim()}`)
   return out
@@ -90,8 +92,8 @@ async function ampCLI(args: string[], stdin?: string) {
 
 /**
  * Serves the bridge through `thread`'s runner portal and points the orbs' secrets at it. Every
- * portal belongs to a thread, and its URL can change when the runner restarts, so the bridge
- * calls this again on every start.
+ * portal belongs to a thread; the bridge calls this again on every start to keep the portal
+ * registered and the secrets current.
  */
 async function publish(thread: string, force: boolean): Promise<Published> {
   // Runner portals get an auto-generated hostname (custom hostnames answer 503 on runners).
