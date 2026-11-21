@@ -118,7 +118,6 @@ test('handoff returns at once and completes when the user continues, even across
   const id = started.result.handoff_id
   await until(() => ext.messages.some((m) => m.type === 'handoff'))
   expect(ext.messages.find((m) => m.type === 'handoff')).toEqual({ type: 'handoff', id, message: 'Sign in' })
-  expect((await call(A, 'handoff', { message: 'again' })).error).toContain('already waiting')
   expect((await (await api(`/handoff/${id}?wait=50`, A)).json()).result).toEqual({ waiting: true })
 
   // The service worker restarts: the card survives in session storage and reports on reconnect.
@@ -132,6 +131,33 @@ test('handoff returns at once and completes when the user continues, even across
   await Bun.sleep(50)
   again.send({ type: 'result', id, result: { continued: true } })
   expect(await poll).toEqual({ result: { continued: true } })
+})
+
+test('a thread that lost its handoff wait can ask again, and status reports the outcome', async () => {
+  const { base, call, api, code, advance } = bridge()
+  const ext = extension(base, { type: 'hello', code: code() })
+  await ext.ready
+  const status = async (thread: string) => (await (await api('/status', thread)).json()).handoff
+  expect(await status(A)).toBeNull()
+
+  const id = (await call(A, 'handoff', { message: 'Create the key, copy it, then Continue' })).result.handoff_id
+  expect(await status(A)).toMatchObject({ state: 'waiting', message: 'Create the key, copy it, then Continue' })
+  // Asking again rejoins the card already shown instead of showing a second one.
+  expect((await call(A, 'handoff', { message: 'something else' })).result).toEqual({ handoff_id: id, resumed: true, message: 'Create the key, copy it, then Continue' })
+  expect(ext.messages.filter((m) => m.type === 'handoff')).toHaveLength(1)
+  // Another thread past the lease's idle limit still can't take over a waiting card.
+  advance(LEASE_IDLE_MS + 1)
+  expect((await call(B, 'handoff', { message: 'x' })).error).toContain('already waiting')
+  expect(await status(B)).toBeNull()
+
+  // The user continues while nobody is polling; the outcome stays visible after the poll window.
+  ext.send({ type: 'result', id, result: { continued: true } })
+  await until(() => false, 50)
+  advance(60 * 60_000)
+  expect(await status(A)).toMatchObject({ state: 'continued' })
+  expect((await status(A)).ended).toBeString()
+  // The next call is a new handoff, not a resumed one.
+  expect((await call(A, 'handoff', { message: 'again' })).result.resumed).toBeUndefined()
 })
 
 test('a reconnecting extension that lost the handoff is asked to show it again', async () => {

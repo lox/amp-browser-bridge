@@ -106,12 +106,12 @@ The common cases:
 
 | Tool | What it does |
 | --- | --- |
-| `browser_status` | Connection, lent tab, who holds it, and what to do next |
+| `browser_status` | Connection, lent tab, who holds it, whether this thread's last handoff is still waiting or you clicked **Continue**, and what to do next |
 | `browser_snapshot` | Accessibility outline with refs (`e12`) for click and type |
 | `browser_screenshot` | JPEG of the viewport |
 | `browser_scroll` | Scroll by a number of pixels |
 | `browser_click`, `browser_type`, `browser_navigate` | Act on the page, after your approval |
-| `browser_handoff` | Hand the tab to you and wait for **Continue** (up to 30 minutes) |
+| `browser_handoff` | Hand the tab to you and wait for **Continue** (up to 30 minutes). If a call is lost while the card is up, calling it again waits for the same card |
 | `browser_bridge_pair` | On the Mac only: open the setup page with a new one-time pairing code |
 | `browser_bridge_publish` | On the Mac only: expose the bridge to your orbs; it republishes itself on every start |
 

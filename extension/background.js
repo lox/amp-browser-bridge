@@ -136,7 +136,7 @@ async function execute(lend, tool, args, effects) {
   }
   // During a handoff the tab belongs to the user: no reading (they may be typing a 2FA code) and
   // no input, which could also land on the card's Continue button as a trusted click.
-  if (await session.get("handoff")) throw new Error("The user has the tab for a handoff. Wait for browser_handoff to return.");
+  if (await session.get("handoff")) throw new Error("The user has the tab for a handoff. Wait for browser_handoff to return, or call it again if it failed; browser_status shows whether the user continued.");
   const tab = await chrome.tabs.get(lend.tabId);
   if (!lend.anyOrigin && originOf(tab.url) !== lend.origin) {
     throw new Error(`The tab has left ${lend.origin}, the site it was lent on. Ask the user to go back or to allow other sites.`);

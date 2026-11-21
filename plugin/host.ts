@@ -13,6 +13,8 @@ export const LEASE_IDLE_MS = 10 * 60_000
 const COMMAND_TIMEOUT_MS = 60_000
 const HANDOFF_TIMEOUT_MS = 30 * 60_000
 const LONG_POLL_MAX_MS = 25_000
+/** Seconds a request may wait for its answer; Bun's default of 10 would cut off long polls and slow commands. */
+const IDLE_TIMEOUT_S = COMMAND_TIMEOUT_MS / 1000 + 30
 
 export interface BridgeOptions {
   dir: string
@@ -31,7 +33,7 @@ export interface Lease {
 export type Published = { url: string; thread: string; at: string }
 
 type Outcome = { result?: unknown; error?: string; unknown?: boolean }
-type Handoff = { message: string; outcome?: Outcome; timer?: Timer; waiters: Set<(o: Outcome) => void> }
+type Handoff = { id: string; thread: string; message: string; started: number; ended?: number; outcome?: Outcome; timer?: Timer; waiters: Set<(o: Outcome) => void> }
 type Socket = ServerWebSocket<{ authed: boolean }>
 
 function same(a: string, b: string) {
@@ -103,6 +105,8 @@ export function startBridge(options: BridgeOptions) {
   let lease: Lease | null = null
   const pending = new Map<string, { resolve: (o: Outcome) => void; timer: Timer }>()
   const handoffs = new Map<string, Handoff>()
+  /** Each thread's latest handoff, kept after it ends so a thread that lost its wait can still learn the outcome. */
+  const latestHandoff = new Map<string, Handoff>()
 
   function sendExtension(message: object) {
     extension?.send(JSON.stringify(message))
@@ -141,6 +145,7 @@ export function startBridge(options: BridgeOptions) {
     const h = handoffs.get(id)
     if (!h || h.outcome) return
     h.outcome = outcome
+    h.ended = now()
     clearTimeout(h.timer)
     for (const w of h.waiters) w(outcome)
     h.waiters.clear()
@@ -148,14 +153,20 @@ export function startBridge(options: BridgeOptions) {
     setTimeout(() => handoffs.delete(id), 5 * 60_000).unref?.()
   }
 
-  function startHandoff(message: string) {
+  function startHandoff(thread: string, message: string) {
+    for (const h of handoffs.values()) {
+      if (h.outcome) continue
+      // The thread lost its wait (a dropped tool call, say) and asks again: wait on the card already shown.
+      if (h.thread === thread) return { result: { handoff_id: h.id, resumed: true, message: h.message } }
+      return { error: 'A handoff is already waiting for the user.' }
+    }
     if (!extension) return { error: 'The browser extension is not connected to the bridge. Ask the user to open Chrome.' }
-    for (const h of handoffs.values()) if (!h.outcome) return { error: 'A handoff is already waiting for the user.' }
     // A command still running could otherwise land on the card once it appears.
     if (pending.size) return { error: 'Wait for the running browser command to finish before handing off.' }
     const id = randomBytes(8).toString('hex')
-    const h: Handoff = { message, waiters: new Set() }
+    const h: Handoff = { id, thread, message, started: now(), waiters: new Set() }
     handoffs.set(id, h)
+    latestHandoff.set(thread, h)
     h.timer = setTimeout(() => {
       sendExtension({ type: 'cancel_handoff', id })
       finishHandoff(id, { error: 'The user did not click Continue within 30 minutes.' })
@@ -182,8 +193,23 @@ export function startBridge(options: BridgeOptions) {
     })
   }
 
-  function status() {
+  /** How `thread`'s latest handoff stands: waiting, continued (the user clicked Continue), or ended without it. */
+  function handoffStatus(thread: string) {
+    const h = latestHandoff.get(thread)
+    if (!h) return null
+    const state = !h.outcome ? 'waiting' : (h.outcome.result as { continued?: boolean } | undefined)?.continued ? 'continued' : 'ended'
     return {
+      state,
+      message: h.message,
+      started: new Date(h.started).toISOString(),
+      ...(h.ended ? { ended: new Date(h.ended).toISOString() } : {}),
+      ...(h.outcome?.error ? { error: h.outcome.error } : {}),
+    }
+  }
+
+  function status(thread = '') {
+    return {
+      handoff: handoffStatus(thread),
       extension_connected: !!extension,
       paired: !!extensionKey,
       tab,
@@ -196,6 +222,7 @@ export function startBridge(options: BridgeOptions) {
   const server: Server<{ authed: boolean }> = Bun.serve<{ authed: boolean }>({
     hostname: '127.0.0.1',
     port: options.port ?? DEFAULT_PORT,
+    idleTimeout: IDLE_TIMEOUT_S,
     async fetch(req, server) {
       const url = new URL(req.url)
       if (url.pathname === '/ext') {
@@ -205,7 +232,7 @@ export function startBridge(options: BridgeOptions) {
         return server.upgrade(req, { data: { authed: false } }) ? undefined : new Response('upgrade failed', { status: 400 })
       }
       if (!same(req.headers.get('x-bridge-token') ?? '', token)) return new Response('unauthorized', { status: 401 })
-      if (url.pathname === '/status' && req.method === 'GET') return Response.json(status())
+      if (url.pathname === '/status' && req.method === 'GET') return Response.json(status(req.headers.get('x-amp-thread') ?? ''))
       if (url.pathname === '/pair' && req.method === 'POST') {
         // The code goes only to a file on this computer, never to the caller.
         newPairingCode()
@@ -227,7 +254,7 @@ export function startBridge(options: BridgeOptions) {
         if (body.tool === 'handoff') {
           const text = (body.args as { message?: unknown } | undefined)?.message
           const message = typeof text === 'string' ? text.slice(0, 500) : 'Your turn'
-          return Response.json(startHandoff(message))
+          return Response.json(startHandoff(thread, message))
         }
         return Response.json(await command(body.tool, body.args ?? {}))
       }
