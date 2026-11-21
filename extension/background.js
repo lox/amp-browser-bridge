@@ -461,7 +461,14 @@ function isSecret() {
 async function describe(target, lend, tab, ref) {
   // Without a ref (a key pressed on whatever has focus) the page is all there is to describe; its
   // document ID lets press refuse a key approved for a page that has since navigated.
-  if (!ref) return {url: tab.url, doc: await documentID(target, lend)};
+  if (!ref) {
+    // URL and document ID from one read, so the site approved is the page the key goes to.
+    const {frameTree} = await cdp(target, "Page.getFrameTree");
+    if (!lend.anyOrigin && originOf(frameTree.frame.url) !== lend.origin) {
+      throw new Error(`The tab has left ${lend.origin}, the site it was lent on. Ask the user to go back or to allow other sites.`);
+    }
+    return {url: frameTree.frame.url, doc: frameTree.frame.loaderId};
+  }
   const entry = await resolveRef(target, lend, ref);
   return {ref, role: entry.role, name: entry.name, url: tab.url, secret: await isolated(target, entry.backendNodeId, isSecret)};
 }
@@ -504,7 +511,7 @@ async function click(target, lend, ref, effects) {
 }
 
 /** Replaces a field's contents; browser_type and browser_fill differ only in what they report. */
-async function replaceText(target, lend, ref, text, submit, effects) {
+async function replaceText(target, lend, ref, text, effects) {
   const {backendNodeId} = await resolveRef(target, lend, ref);
   await uncovered(target, backendNodeId, ref);
   // Focus and select in an isolated world, without bringing the tab to the front, and check that
@@ -527,12 +534,12 @@ async function replaceText(target, lend, ref, text, submit, effects) {
   await cdp(target, "Input.insertText", {text});
   // The page could still move focus between the check and the insert; then the outcome is unknown.
   if (!await isolated(target, backendNodeId, hasFocus)) throw new Error(`Focus moved away from ${ref} while typing; check where the text went.`);
-  if (submit) await sendKey(target, parseKey("Enter"));
   return backendNodeId;
 }
 
 async function type(target, lend, ref, text, submit, effects) {
-  await replaceText(target, lend, ref, text, submit, effects);
+  await replaceText(target, lend, ref, text, effects);
+  if (submit) await sendKey(target, parseKey("Enter"));
   return {typed: ref, submitted: submit};
 }
 
@@ -540,8 +547,10 @@ async function fill(target, lend, ref, value, submit, effects) {
   // Checked before the value goes in too, so a page that turns a password field into a text field
   // as you type can't make the result show it.
   const before = await isolated(target, (await resolveRef(target, lend, ref)).backendNodeId, isSecret);
-  const backendNodeId = await replaceText(target, lend, ref, value, submit, effects);
+  const backendNodeId = await replaceText(target, lend, ref, value, effects);
   const secret = before || await isolated(target, backendNodeId, isSecret);
+  // Enter last: a submit can navigate, and then the field is gone.
+  if (submit) await sendKey(target, parseKey("Enter"));
   return {filled: ref, value: secret ? `(hidden: ${[...value].length} characters)` : value.slice(0, 80), submitted: submit};
 }
 
@@ -568,6 +577,7 @@ function parseKey(raw) {
     event = {key: key === "Space" ? " " : key, code: key, windowsVirtualKeyCode: code, text};
   } else if ([...key].length === 1 && key > " ") {
     const upper = key.toUpperCase();
+    if (modifiers & MODIFIERS.Shift && !/[A-Z]/.test(upper)) throw new Error(`Shift+${key} depends on the keyboard layout. Pass the character it should type instead, such as ! for Shift+1.`);
     const code = /[A-Z]/.test(upper) ? `Key${upper}` : /[0-9]/.test(key) ? `Digit${key}` : "";
     const shown = modifiers & MODIFIERS.Shift ? upper : key;
     event = {key: shown, code, windowsVirtualKeyCode: /[A-Z0-9]/.test(upper) ? upper.charCodeAt(0) : 0, text: shown};
@@ -606,7 +616,10 @@ async function press(target, lend, ref, key, doc, effects) {
 async function select(target, lend, ref, value, effects) {
   const {backendNodeId} = await resolveRef(target, lend, ref);
   await uncovered(target, backendNodeId, ref);
-  // Find the option first, matching its value, then its visible label, then the label in any case.
+  // Matched, checked and changed in one step in the page, so it can't disable the option in between.
+  // Set as a person would pick it: the page hears input and change, and like a plain click only this
+  // option stays selected, in a multi-select too.
+  effects.sent = true;
   const found = await isolated(target, backendNodeId, function (wanted) {
     if (!(this instanceof HTMLSelectElement)) return {error: "is not a <select>. For a custom dropdown, click it, then click the option"};
     if (this.disabled) return {error: "is disabled"};
@@ -616,24 +629,15 @@ async function select(target, lend, ref, value, effects) {
       options.find((o) => norm(o.label).toLowerCase() === norm(wanted).toLowerCase());
     if (!option) return {error: `has no option ${JSON.stringify(wanted)}. Its options: ${options.slice(0, 50).map((o) => JSON.stringify(norm(o.label))).join(", ")}`};
     if (option.disabled || option.parentElement?.disabled) return {error: `has option ${JSON.stringify(norm(option.label))} disabled`};
-    return {index: option.index, value: option.value, label: norm(option.label)};
-  }, {value});
-  if (found.error) throw new Error(`${ref} ${found.error}.`);
-  effects.sent = true;
-  // Set it as a person would pick it: the page hears input and change.
-  const changed = await isolated(target, backendNodeId, function (want) {
-    const option = this.options[want.index];
-    if (!option || option.value !== want.value) return false;
-    // Like a plain click, this leaves only this option selected, in a multi-select too.
-    this.selectedIndex = want.index;
+    this.selectedIndex = option.index;
     this.dispatchEvent(new Event("input", {bubbles: true, composed: true}));
     this.dispatchEvent(new Event("change", {bubbles: true}));
-    return true;
-  }, {value: found});
-  if (!changed) {
-    // Checked and refused in one step in the page, so nothing changed.
+    return {value: option.value, label: norm(option.label)};
+  }, {value});
+  if (found.error) {
+    // Refused before anything changed.
     effects.sent = false;
-    throw new Error(`The options of ${ref} changed. Take a new snapshot.`);
+    throw new Error(`${ref} ${found.error}.`);
   }
   return {selected: ref, value: found.value, label: found.label};
 }
@@ -652,7 +656,7 @@ async function waitFor(target, lend, args) {
   const wanted = [text && `text ${JSON.stringify(args.text)}`, url && `a URL containing ${JSON.stringify(url)}`, role && `${role}${name ? ` ${JSON.stringify(args.name)}` : ""}`].filter(Boolean).join(" and ");
   for (;;) {
     // Refuses once the tab leaves the lent site, like every other read.
-    await documentID(target, lend);
+    const doc = await documentID(target, lend);
     const current = (await chrome.tabs.get(target.tabId)).url || "";
     let met = !url || current.includes(url);
     if (met && (text || role)) {
@@ -666,6 +670,8 @@ async function waitFor(target, lend, args) {
       });
       met = found && (!text || seen.replace(/\s+/g, " ").includes(text));
     }
+    // Every condition must hold on one document: if the page moved during the read, read again.
+    if (met && (await documentID(target, lend) !== doc || ((await chrome.tabs.get(target.tabId)).url || "") !== current)) met = false;
     const waited = Date.now() - started;
     if (met) return {matched: wanted, waited_ms: waited, url: current};
     if (waited >= limit) throw new Error(`Timed out after ${Math.round(limit / 1000)}s waiting for ${wanted}. The tab is at ${current}.`);
