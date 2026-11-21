@@ -38,11 +38,13 @@ async function tabInfo() {
 
 async function badge() {
   const [lend, handoff] = await Promise.all([getLend(), session.get("handoff")]);
-  const text = !lend ? "" : handoff ? "WAIT" : running ? "RUN" : "ON";
-  await chrome.action.setBadgeText({text});
+  if (!lend) return;
+  // Per tab: the badge shows only while you look at the lent tab, so ON never marks the wrong one.
+  const tabId = lend.tabId;
+  await chrome.action.setBadgeText({tabId, text: handoff ? "WAIT" : running ? "RUN" : "ON"});
   // The icon's orange asks for you, the setup page's blue is busy, the icon's navy is lent and idle.
-  await chrome.action.setBadgeBackgroundColor({color: handoff ? "#ea580c" : running ? "#1d4ed8" : "#111827"});
-  await chrome.action.setBadgeTextColor({color: "#ffffff"});
+  await chrome.action.setBadgeBackgroundColor({tabId, color: handoff ? "#ea580c" : running ? "#1d4ed8" : "#111827"});
+  await chrome.action.setBadgeTextColor({tabId, color: "#ffffff"});
 }
 
 function send(message) {
@@ -418,7 +420,13 @@ async function lend(tabId) {
   await cdp({tabId}, "Page.enable");
   await cdp({tabId}, "Accessibility.enable");
   // Lent read-only and limited to the current site until the user widens it.
-  await session.set("lend", {tabId, origin: originOf(tab.url), allowActions: false, anyOrigin: false});
+  // Chrome deletes a group when its last tab leaves, so remember enough to recreate it.
+  const previousGroup = tab.groupId >= 0 ? await chrome.tabGroups.get(tab.groupId).catch(() => null) : null;
+  await session.set("lend", {
+    tabId, origin: originOf(tab.url), allowActions: false, anyOrigin: false,
+    previousGroup: previousGroup && {id: previousGroup.id, title: previousGroup.title, color: previousGroup.color, windowId: previousGroup.windowId},
+  });
+  await groupTab(tabId);
   await session.remove("refs");
   send({type: "tab", tab: await tabInfo()});
   await badge();
@@ -431,13 +439,47 @@ async function setPermissions(changes) {
   send({type: "tab", tab: await tabInfo()});
 }
 
+// The lent tab sits in a green "Amp" tab group, so it's easy to spot from any tab in the window.
+const GROUP_TITLE = "Amp";
+
+async function groupTab(tabId) {
+  try {
+    const groupId = await chrome.tabs.group({tabIds: [tabId]});
+    await chrome.tabGroups.update(groupId, {title: GROUP_TITLE, color: "green", collapsed: false});
+    await session.set("lend", {...(await getLend()), groupId});
+  } catch {
+    // Grouping is a hint, never a reason to refuse a lend (some Chromium browsers lack tab groups).
+  }
+}
+
+/** Puts the tab back where lending found it, unless the user moved it to another group since. */
+async function ungroupTab(lend) {
+  if (lend.groupId == null) return;
+  const tab = await chrome.tabs.get(lend.tabId).catch(() => null);
+  if (!tab || tab.groupId !== lend.groupId) return;
+  const before = lend.previousGroup;
+  try {
+    if (!before) return await chrome.tabs.ungroup(lend.tabId);
+    const existing = await chrome.tabGroups.get(before.id).catch(() => null);
+    if (existing && existing.windowId === tab.windowId) return void await chrome.tabs.group({tabIds: [lend.tabId], groupId: existing.id});
+    const groupId = await chrome.tabs.group({tabIds: [lend.tabId]});
+    await chrome.tabGroups.update(groupId, {title: before.title, color: before.color});
+  } catch {
+    // Best effort: the tab may have closed or moved meanwhile.
+  }
+}
+
 async function stop() {
   const current = await getLend();
   const handoff = await session.get("handoff");
   if (handoff) send({type: "result", id: handoff.id, error: "The user stopped lending the tab."});
   await removeCard();
   await chrome.storage.session.remove(["lend", "refs", "handoff"]);
-  if (current) await chrome.debugger.detach({tabId: current.tabId}).catch(() => {});
+  if (current) {
+    await chrome.action.setBadgeText({tabId: current.tabId, text: ""}).catch(() => {});
+    await ungroupTab(current);
+    await chrome.debugger.detach({tabId: current.tabId}).catch(() => {});
+  }
   send({type: "tab", tab: null});
   await badge();
 }
@@ -506,4 +548,5 @@ chrome.runtime.onInstalled.addListener(({reason}) => {
 });
 
 connect();
-badge();
+// Earlier versions set the badge for every tab; clear that before showing the per-tab one.
+chrome.action.setBadgeText({text: ""}).then(badge);

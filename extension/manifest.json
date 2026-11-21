@@ -9,6 +9,7 @@
     "debugger",
     "storage",
     "tabs",
+    "tabGroups",
     "scripting"
   ],
   "host_permissions": [
