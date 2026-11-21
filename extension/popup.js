@@ -15,13 +15,15 @@ function render(s) {
     $("anyOrigin").checked = s.lend.anyOrigin;
     $("origin").textContent = s.lend.origin;
   }
-  $("lease").classList.toggle("hidden", !s.lease);
+  // Release goes through the bridge, so it only shows while connected.
+  $("lease").classList.toggle("hidden", !s.connected || !s.lease);
   if (s.lease) {
     $("leaseThread").textContent = s.lease.thread;
     $("leaseThread").href = `https://ampcode.com/threads/${s.lease.thread}`;
   }
   const [state, status, detail] = !s.connected
     ? s.bridge === "missing" || s.bridge === "other" ? ["fail", "Bridge not found", "Open the Amp app on your Mac."]
+    : s.paired && s.bridge === "found" && s.bridgeError ? ["fail", "Disconnected", "See below."]
     : s.paired ? ["wait", "Connecting to the bridge…", ""]
     : ["fail", "Not paired", "Finish setup to pair this browser."]
     : s.waiting ? ["wait", "Amp is waiting for you", s.waiting]
