@@ -75,6 +75,8 @@ publish._
   in an isolated world, so the page cannot press Continue itself.
 - **tabs:** Reads the lent tab's title and URL to keep it on the site the user lent it on, notices
   when the tab closes or navigates, and opens the extension's setup page.
+- **tabGroups:** Puts the lent tab in a green "Amp" tab group, so the user can see which tab is
+  lent from anywhere in the window, and puts it back in its earlier group when lending stops.
 - **storage:** Keeps the pairing key in local storage and the current lend and handoff in session
   storage, so a service worker restart doesn't drop them.
 - **Host permissions (`http://*/*`, `https://*/*`):** The user can lend a tab on any site, and
