@@ -27,16 +27,18 @@ plugin, an extension, and the Amp app on your Mac.
 
 ## Set up
 
-1. **Install the plugin** in your User Plugins repository, so it loads on your Mac and in every
-   orb. Clone it (`amp plugins repositories` prints the command), copy this repository's
-   `plugin/` directory into it as `browser-bridge/`, then commit and push:
+Setup happens in Amp threads and Chrome; you don't need a terminal.
 
-   ```sh
-   cp -R plugin ~/path/to/user-plugins/browser-bridge
+1. **Install the plugin.** In any Amp thread, ask:
+
+   ```prompt
+   Install the plugin/ directory from https://github.com/lox/amp-browser-bridge into my personal plugins as browser-bridge, then push it.
    ```
 
-   On your Mac the plugin runs the bridge; everywhere else it only adds the tools. Start a new thread
-   (or reload plugins) to pick it up.
+   Amp copies it into your User Plugins repository, so it loads on your Mac and in every orb. On
+   your Mac the plugin runs the bridge; everywhere else it only adds the tools. New threads pick it
+   up. (`amp plugins import` and `amp plugins add` only take Amp-hosted plugin URLs, not GitHub
+   ones, so there is no one-line command yet.)
 
 2. **Load the extension.** Open `chrome://extensions`, turn on **Developer mode**, choose **Load
    unpacked**, and pick this repository's `extension/` folder. Chrome opens the extension's setup
@@ -44,11 +46,12 @@ plugin, an extension, and the Amp app on your Mac.
    lent) and says what to do at each one that fails. Open it again from the popup's **Setup and
    status** link.
 
-3. **Pair it.** Run `cat ~/.amp-browser-bridge/pairing-code` and enter the code on the setup page.
-   A code works once, for 10 minutes. If it expires, ask Amp in a thread on your Mac for a new
-   pairing code (the `browser_bridge_pair` tool writes a fresh one to the same file). Opening
-   `chrome-extension://<extension ID>/setup.html#code=<code>` pairs without typing; the page drops
-   the code from the address bar.
+3. **Pair it.** In an Amp thread on your Mac, ask *"pair the browser extension"*. The
+   `browser_bridge_pair` tool makes a one-time code (valid for 10 minutes) and opens the
+   extension's setup page in Chrome on your Mac with the code in the address, so the extension pairs
+   by itself. The code never leaves your Mac. If Chrome wasn't running and the page says it was
+   blocked, reload it. As a fallback, the code is also in `~/.amp-browser-bridge/pairing-code`; enter
+   it on the extension's setup page.
 
 4. **Publish the bridge to your orbs.** In an Amp thread on your Mac, ask *"publish the browser
    bridge"*. After you confirm, the `browser_bridge_publish` tool:
@@ -56,10 +59,12 @@ plugin, an extension, and the Amp app on your Mac.
    - stores `BROWSER_BRIDGE_URL` and `BROWSER_BRIDGE_TOKEN` as your personal Amp secrets, which every
      new orb receives.
 
-   Keep that thread unarchived: the portal belongs to it. If you archive it, publish again from
-   another thread on the Mac. Orbs that were already running need `amp orb restart-processes`.
-   The setup page ticks this step when the bridge reports it is published; a bridge that doesn't
-   report it shows the step as unknown.
+   From then on, the bridge publishes itself again every time it starts (after the Mac app
+   restarts, say): it re-registers the portal through the same thread and updates
+   `BROWSER_BRIDGE_URL` if the address changed. Amp ties every portal to a thread, so keep that
+   thread unarchived. If republishing fails, the extension's setup page says the bridge is not
+   published; ask again from any thread on the Mac. Orbs that were already running need
+   `amp orb restart-processes` to see a new address.
 
 ## Use it
 
@@ -92,8 +97,8 @@ something like *"read my lent tab and summarise the open issues"*.
 | `browser_scroll` | Scroll by a number of pixels |
 | `browser_click`, `browser_type`, `browser_navigate` | Act on the page, after your approval |
 | `browser_handoff` | Hand the tab to you and wait for **Continue** (up to 30 minutes) |
-| `browser_bridge_publish` | On the Mac only: expose the bridge to your orbs |
-| `browser_bridge_pair` | On the Mac only: write a new pairing code to `~/.amp-browser-bridge/pairing-code` |
+| `browser_bridge_publish` | On the Mac only: expose the bridge to your orbs; it republishes itself on every start |
+| `browser_bridge_pair` | On the Mac only: open the extension's setup page with a new one-time pairing code |
 
 ## Security
 
@@ -133,7 +138,9 @@ change the port (the extension expects 19989).
 
 The extension (`extension/`) attaches Chrome's debugger to the lent tab only. Its state lives in
 session storage, so a service worker restart keeps the lend, the snapshot refs and a waiting
-handoff. You can also run the bridge without Amp: `bun plugin/host.ts`.
+handoff. The bridge tells the extension where it is published (`~/.amp-browser-bridge/published.json`:
+portal URL, owning thread and time, never the token), so the setup page can show it. You can also
+run the bridge without Amp: `bun plugin/host.ts`.
 
 The setup page (`extension/setup.html`) finds the bridge by its `401` answer on
 `http://127.0.0.1:19989/status`, and learns about publishing from a
