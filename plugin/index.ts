@@ -2,7 +2,8 @@ import type { PluginAPI, PluginToolContext } from '@ampcode/plugin'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { DEFAULT_PORT, startBridge, tokenFile } from './host'
+import { EXTENSION_ID } from './extension-id'
+import { DEFAULT_PORT, readPublished, startBridge, tokenFile, writePublished, type Published } from './host'
 
 export const description = "Lets Amp threads, including orbs, use one Chrome tab you lend on your Mac. On the Mac it runs the bridge; elsewhere it reaches the bridge through a runner portal."
 
@@ -76,6 +77,66 @@ async function call(target: Target, ctx: PluginToolContext, tool: string, args: 
   const reply = await request(target, ctx.thread.id, '/call', { method: 'POST', body: JSON.stringify({ tool, args }), signal: ctx.signal })
   if (reply.error) throw new Error(reply.unknown ? `${reply.error} Check the page before retrying.` : reply.error)
   return reply.result
+}
+
+// ---- Publishing and pairing on the Mac ----
+
+async function ampCLI(args: string[], stdin?: string) {
+  const proc = Bun.spawn(['amp', ...args], { stdin: stdin === undefined ? 'ignore' : new Blob([stdin]), stdout: 'pipe', stderr: 'pipe' })
+  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
+  if (code !== 0) throw new Error(`amp ${args.slice(0, 3).join(' ')} failed: ${(err || out).trim()}`)
+  return out
+}
+
+/**
+ * Serves the bridge through `thread`'s runner portal and points the orbs' secrets at it. Every
+ * portal belongs to a thread, and its URL can change when the runner restarts, so the bridge
+ * calls this again on every start.
+ */
+async function publish(thread: string, force: boolean): Promise<Published> {
+  // Runner portals get an auto-generated hostname (custom hostnames answer 503 on runners).
+  const out = await ampCLI(['orb', 'portal', String(port), '--thread', thread, '--title', 'Browser bridge', '--description', 'Amp browser bridge; requires its token'])
+  const url = out.split(/\s+/).filter((w) => w.startsWith('https://')).pop()?.replace(/\/$/, '')
+  if (!url) throw new Error(`amp orb portal printed no URL: ${out.trim()}`)
+  if (force || readPublished(dir)?.url !== url) {
+    await ampCLI(['secrets', 'set', '--user', 'BROWSER_BRIDGE_TOKEN', '--data-file', tokenFile(dir)])
+    await ampCLI(['secrets', 'set', '--user', '--env', 'BROWSER_BRIDGE_URL', '--data-file', '-'], url)
+  }
+  const published = { url, thread, at: new Date().toISOString() }
+  writePublished(dir, published)
+  return published
+}
+
+/** Publishes again through the thread the user last published from, if any. */
+async function republish(log: (m: string) => void, stopped: () => boolean) {
+  const previous = readPublished(dir)
+  if (!previous) return
+  // The runner may still be starting; give up after about five minutes.
+  for (let attempt = 1; !stopped(); attempt++) {
+    try {
+      const { url } = await publish(previous.thread, false)
+      log(`republished the bridge at ${url}`)
+      return
+    } catch (error: any) {
+      if (attempt === 4) {
+        log(`could not republish the bridge through thread ${previous.thread}: ${error?.message ?? error}`)
+        // Tell the setup page, so it asks the user to publish again from a thread on the Mac.
+        writePublished(dir, null)
+        return
+      }
+      await Bun.sleep(attempt * 30_000)
+    }
+  }
+}
+
+/** Opens the extension's setup page in Chrome on this Mac. The code stays in the URL fragment, on this Mac. */
+async function openSetupPage(code: string) {
+  if (process.platform !== 'darwin') return false
+  const url = `chrome-extension://${EXTENSION_ID}/setup.html#code=${encodeURIComponent(code)}`
+  for (const args of [['-a', 'Google Chrome', url], [url]]) {
+    if ((await Bun.spawn(['open', ...args], { stdout: 'ignore', stderr: 'ignore' }).exited) === 0) return true
+  }
+  return false
 }
 
 // ---- Approval for actions that change the page ----
@@ -169,12 +230,14 @@ export default async function (amp: PluginAPI) {
   let local: Target | null = null
   if (mode === 'host') {
     let bridge: ReturnType<typeof startBridge> | null = null
+    let stopped = false
     // Several Amp processes on one Mac load this plugin; the first to bind the port runs the bridge
     // and the others keep trying, so the bridge survives whichever process owns it exiting.
     const tryStart = () => {
       if (bridge) return
       try {
         bridge = startBridge({ dir, port, log: (m) => amp.logger.log(m) })
+        void republish((m) => amp.logger.log(m), () => stopped)
       } catch (error: any) {
         if (error?.code !== 'EADDRINUSE') amp.logger.log(`bridge failed to start: ${error?.message ?? error}`)
       }
@@ -182,6 +245,7 @@ export default async function (amp: PluginAPI) {
     tryStart()
     const retry = setInterval(tryStart, 15_000)
     amp.onDispose(() => {
+      stopped = true
       clearInterval(retry)
       bridge?.stop()
     })
@@ -190,42 +254,37 @@ export default async function (amp: PluginAPI) {
     amp.registerTool({
       name: 'browser_bridge_publish',
       title: 'Publish browser bridge',
-      description: "Expose this Mac's browser bridge to the user's orbs: registers this thread's portal for it and stores BROWSER_BRIDGE_URL and BROWSER_BRIDGE_TOKEN as the user's personal Amp secrets. Run it in a thread on the Mac when the user asks to set up or republish the browser bridge. The portal lives as long as this thread, so tell the user not to archive it.",
+      description: "Expose this Mac's browser bridge to the user's orbs: registers this thread's portal for it and stores BROWSER_BRIDGE_URL and BROWSER_BRIDGE_TOKEN as the user's personal Amp secrets. Run it in a thread on the Mac when the user asks to set up or republish the browser bridge. Afterwards the bridge publishes itself again whenever it starts, through the same thread, so tell the user not to archive it.",
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       async execute(_input, ctx) {
         const ok = await ctx.ui.confirm({
           title: 'Publish the browser bridge to your orbs?',
-          message: `This thread's portal will serve the bridge on port ${port}, and your personal Amp secrets BROWSER_BRIDGE_URL and BROWSER_BRIDGE_TOKEN will be updated so new orbs can reach it. Only you can open the portal.`,
+          message: `This thread's portal will serve the bridge on port ${port}, and your personal Amp secrets BROWSER_BRIDGE_URL and BROWSER_BRIDGE_TOKEN will be updated so new orbs can reach it. Whenever the bridge starts again it re-registers the portal and updates these secrets itself. Only you can open the portal.`,
           confirmButtonText: 'Publish',
           requireHuman: true,
         })
         if (!ok) throw new Error('The user cancelled publishing.')
-        const run = async (args: string[], stdin?: string) => {
-          const proc = Bun.spawn(['amp', ...args], { stdin: stdin === undefined ? 'ignore' : new Blob([stdin]), stdout: 'pipe', stderr: 'pipe' })
-          const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
-          if (code !== 0) throw new Error(`amp ${args.slice(0, 3).join(' ')} failed: ${(err || out).trim()}`)
-          return out
-        }
-        // Runner portals get an auto-generated hostname (custom hostnames answer 503 on runners), so
-        // the URL is published as a secret and republishing from another thread updates it.
-        const out = await run(['orb', 'portal', String(port), '--thread', ctx.thread.id, '--title', 'Browser bridge', '--description', 'Amp browser bridge; requires its token'])
-        const url = out.split(/\s+/).filter((w) => w.startsWith('https://')).pop()?.replace(/\/$/, '')
-        if (!url) throw new Error(`amp orb portal printed no URL: ${out.trim()}`)
-        await run(['secrets', 'set', '--user', 'BROWSER_BRIDGE_TOKEN', '--data-file', tokenFile(dir)])
-        await run(['secrets', 'set', '--user', '--env', 'BROWSER_BRIDGE_URL', '--data-file', '-'], url)
-        return JSON.stringify({ portal_url: url, note: 'New orbs get these secrets when they start; running orbs need `amp orb restart-processes`. Keep this thread unarchived: the portal belongs to it.' })
+        const { url } = await publish(ctx.thread.id, true)
+        return JSON.stringify({ portal_url: url, note: 'New orbs get these secrets when they start; running orbs need `amp orb restart-processes`. The bridge publishes itself again on every start through this thread, so keep it unarchived.' })
       },
     })
 
     amp.registerTool({
       name: 'browser_bridge_pair',
-      title: 'New pairing code',
-      description: 'Make a new one-time pairing code for the Chrome extension, valid for 10 minutes. The code is written to a file on this Mac and never returned; tell the user to run `cat ~/.amp-browser-bridge/pairing-code` and enter it in the extension popup.',
+      title: 'Pair Chrome extension',
+      description: "Pair the Chrome extension with this Mac's bridge: makes a one-time pairing code, valid for 10 minutes, and opens the extension's setup page in Chrome on this Mac with the code in it, so the extension pairs by itself. The code never leaves the Mac and is never returned.",
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       async execute(_input, ctx) {
         const reply = await request(target(), ctx.thread.id, '/pair', { method: 'POST', signal: ctx.signal })
         if (reply.error) throw new Error(reply.error)
-        return JSON.stringify({ ...reply.result, next: 'Ask the user to run `cat ~/.amp-browser-bridge/pairing-code` and enter the code in the extension popup.' })
+        const code = readFileSync(join(dir, 'pairing-code'), 'utf8').trim()
+        const opened = await openSetupPage(code)
+        return JSON.stringify({
+          valid_minutes: reply.result.valid_minutes,
+          next: opened
+            ? "The extension's setup page opened in Chrome on this Mac and pairs by itself. If it shows an error, ask the user to load the extension (see the README) and pair again."
+            : 'Chrome could not be opened. Ask the user to run `cat ~/.amp-browser-bridge/pairing-code` on the Mac and enter the code in the extension popup.',
+        })
       },
     })
   }

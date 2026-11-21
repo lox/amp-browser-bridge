@@ -4,7 +4,7 @@
 // extension authenticates with a key it receives once for a one-time pairing code.
 import type { Server, ServerWebSocket } from 'bun'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, unwatchFile, watchFile, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 export const DEFAULT_PORT = 19989
@@ -27,6 +27,9 @@ export interface Lease {
   lastUsed: number
 }
 
+/** Where the bridge is published to orbs: its portal URL, the thread that owns the portal, and when. */
+export type Published = { url: string; thread: string; at: string }
+
 type Outcome = { result?: unknown; error?: string; unknown?: boolean }
 type Handoff = { message: string; outcome?: Outcome; timer?: Timer; waiters: Set<(o: Outcome) => void> }
 type Socket = ServerWebSocket<{ authed: boolean }>
@@ -48,6 +51,24 @@ export function tokenFile(dir: string) {
   return join(dir, 'token')
 }
 
+function publishedFile(dir: string) {
+  return join(dir, 'published.json')
+}
+
+export function readPublished(dir: string): Published | null {
+  try {
+    return JSON.parse(readFileSync(publishedFile(dir), 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+/** Records where the bridge is published, or that it is not (null). A running bridge passes it on to the extension. */
+export function writePublished(dir: string, p: Published | null) {
+  if (p) writeFileSync(publishedFile(dir), JSON.stringify(p) + '\n', { mode: 0o600 })
+  else rmSync(publishedFile(dir), { force: true })
+}
+
 export function startBridge(options: BridgeOptions) {
   const { dir } = options
   const log = options.log ?? (() => {})
@@ -56,6 +77,14 @@ export function startBridge(options: BridgeOptions) {
   const token = readOrCreate(tokenFile(dir), () => randomBytes(24).toString('hex'))
   const keyFile = join(dir, 'extension-key')
   let extensionKey = existsSync(keyFile) ? readFileSync(keyFile, 'utf8').trim() : ''
+  let published = readPublished(dir)
+  // Any Amp process on this computer may publish; the bridge tells the extension when it does.
+  const watcher = (current: { mtimeMs: number }, previous: { mtimeMs: number }) => {
+    if (current.mtimeMs === previous.mtimeMs) return
+    published = readPublished(dir)
+    sendExtension({ type: 'published', published })
+  }
+  watchFile(publishedFile(dir), { interval: 1000, persistent: false }, watcher)
 
   let pairingCode = ''
   let pairingExpires = 0
@@ -160,6 +189,7 @@ export function startBridge(options: BridgeOptions) {
       tab,
       lease: lease && { thread: lease.thread, since: new Date(lease.since).toISOString(), idle_seconds: Math.round((now() - lease.lastUsed) / 1000) },
       pairing_code_active: now() < pairingExpires,
+      published,
     }
   }
 
@@ -239,6 +269,7 @@ export function startBridge(options: BridgeOptions) {
           extension = ws
           tab = message.tab ?? null
           ws.send(JSON.stringify({ type: 'ready' }))
+          sendExtension({ type: 'published', published })
           publishLease()
           // A service worker restart keeps a waiting handoff in session storage; anything else is stale.
           for (const [id, h] of handoffs) {
@@ -284,7 +315,11 @@ export function startBridge(options: BridgeOptions) {
 
   if (!extensionKey) newPairingCode()
   log(`browser bridge listening on http://127.0.0.1:${server.port}`)
-  return { server, token, newPairingCode, status, stop: () => server.stop(true) }
+  const stop = () => {
+    unwatchFile(publishedFile(dir), watcher)
+    server.stop(true)
+  }
+  return { server, token, newPairingCode, status, stop }
 }
 
 // `bun plugin/host.ts` runs the bridge on its own, without Amp.
