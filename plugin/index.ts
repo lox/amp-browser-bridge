@@ -283,7 +283,7 @@ export default async function (amp: PluginAPI) {
           valid_minutes: reply.result.valid_minutes,
           next: opened
             ? "The extension's setup page opened in Chrome on this Mac and pairs by itself. If it shows an error, ask the user to load the extension (see the README) and pair again."
-            : 'Chrome could not be opened. Ask the user to run `cat ~/.amp-browser-bridge/pairing-code` on the Mac and enter the code in the extension popup.',
+            : 'Chrome could not be opened. Ask the user to run `cat ~/.amp-browser-bridge/pairing-code` on the Mac and enter the code on the extension\'s setup page (extension popup → Setup and status).',
         })
       },
     })

@@ -47,8 +47,8 @@ Setup happens in Amp threads and Chrome; you don't need a terminal.
    `browser_bridge_pair` tool makes a one-time code (valid for 10 minutes) and opens the
    extension's setup page in Chrome on your Mac with the code in the address, so the extension pairs
    by itself. The code never leaves your Mac. If Chrome wasn't running and the page says it was
-   blocked, reload it. As a fallback, the code is also in `~/.amp-browser-bridge/pairing-code` for
-   the extension's popup.
+   blocked, reload it. As a fallback, the code is also in `~/.amp-browser-bridge/pairing-code`; enter
+   it on the extension's setup page.
 
 4. **Publish the bridge to your orbs.** In an Amp thread on your Mac, ask *"publish the browser
    bridge"*. After you confirm, the `browser_bridge_publish` tool:
