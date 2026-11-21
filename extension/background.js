@@ -40,7 +40,9 @@ async function badge() {
   const [lend, handoff] = await Promise.all([getLend(), session.get("handoff")]);
   const text = !lend ? "" : handoff ? "WAIT" : running ? "RUN" : "ON";
   await chrome.action.setBadgeText({text});
-  await chrome.action.setBadgeBackgroundColor({color: handoff ? "#b45309" : running ? "#1d4ed8" : "#216442"});
+  // The icon's orange asks for you, the setup page's blue is busy, the icon's navy is lent and idle.
+  await chrome.action.setBadgeBackgroundColor({color: handoff ? "#ea580c" : running ? "#1d4ed8" : "#111827"});
+  await chrome.action.setBadgeTextColor({color: "#ffffff"});
 }
 
 function send(message) {
