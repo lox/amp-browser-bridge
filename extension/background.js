@@ -446,7 +446,10 @@ async function groupTab(tabId) {
   try {
     const groupId = await chrome.tabs.group({tabIds: [tabId]});
     await chrome.tabGroups.update(groupId, {title: GROUP_TITLE, color: "green", collapsed: false});
-    await session.set("lend", {...(await getLend()), groupId});
+    const lend = {...(await getLend()), groupId};
+    await session.set("lend", lend);
+    // Session storage dies with a reload; this local record lets startup undo exactly this group.
+    await chrome.storage.local.set({ampGroup: {tabId, groupId, previousGroup: lend.previousGroup}});
   } catch {
     // Grouping is a hint, never a reason to refuse a lend (some Chromium browsers lack tab groups).
   }
@@ -478,6 +481,7 @@ async function stop() {
   if (current) {
     await chrome.action.setBadgeText({tabId: current.tabId, text: ""}).catch(() => {});
     await ungroupTab(current);
+    await chrome.storage.local.remove("ampGroup");
     await chrome.debugger.detach({tabId: current.tabId}).catch(() => {});
   }
   send({type: "tab", tab: null});
@@ -547,6 +551,22 @@ chrome.runtime.onInstalled.addListener(({reason}) => {
   if (reason === "install") chrome.tabs.create({url: chrome.runtime.getURL("setup.html")});
 });
 
+/**
+ * A reload or update of the extension ends the lend without running stop(), which would leave the
+ * tab in the Amp group. With nothing lent, put back only the tab and group this extension recorded,
+ * and only while that group still looks like ours, so a group the user made is never touched.
+ */
+async function clearStaleGroups() {
+  const {ampGroup} = await chrome.storage.local.get("ampGroup");
+  if (!ampGroup || await getLend()) return;
+  const group = await chrome.tabGroups.get(ampGroup.groupId).catch(() => null);
+  if (group?.title === GROUP_TITLE && group.color === "green") await ungroupTab(ampGroup);
+  // A lend that started meanwhile records its own group; keep that record.
+  const {ampGroup: now} = await chrome.storage.local.get("ampGroup");
+  if (now?.groupId === ampGroup.groupId) await chrome.storage.local.remove("ampGroup");
+}
+
 connect();
+clearStaleGroups();
 // Earlier versions set the badge for every tab; clear that before showing the per-tab one.
 chrome.action.setBadgeText({text: ""}).then(badge);

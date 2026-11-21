@@ -76,8 +76,9 @@ about it.
 - **Allow other sites** lets the agent navigate away from the site you lent the tab on. If you
   browse away yourself, the agent waits until you come back.
 - **Continue** ends a handoff, on the card the agent shows on the page or in the popup.
-- **Release to other threads** frees the tab. One thread holds it at a time, until it has been idle
-  for 10 minutes.
+- **Release to other threads** lets another thread use the tab. One thread holds it at a time,
+  until it has been idle for 10 minutes. The tab stays lent and in the Amp group; use **Stop
+  lending** to take it back.
 - The lent tab moves into a green **Amp** tab group, and goes back to its earlier group when you
   stop lending. On that tab, the toolbar badge shows `ON`, `RUN` while a command runs, and `WAIT`
   when Amp needs you; other tabs show no badge.
