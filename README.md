@@ -85,7 +85,11 @@ than hitting whatever is on top.
 
 ## Troubleshooting
 
-The setup page is the first place to look; each red step says how to fix it. The common cases:
+The setup page is the first place to look; each red step says how to fix it:
+
+<p align="center"><img src="docs/setup-no-bridge.png" width="620" alt="The setup page with the first step red: nothing answers on 127.0.0.1:19989, and how to fix it"></p>
+
+The common cases:
 
 - **"Nothing answers on 127.0.0.1:19989".** Open the Amp app with **Run threads on this Mac**
   turned on, and check the plugin is installed. The bridge starts with Amp.
