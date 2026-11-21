@@ -171,7 +171,7 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
     if (!tab.allow_actions) throw new Error('This tab is lent read-only. Ask the user to turn on "Allow clicks, typing and navigation" in the extension popup.')
   }
   let url: URL | null = null
-  let d: { role: string; name: string; url: string } | null = null
+  let d: { role?: string; name?: string; url: string; secret?: boolean } | null = null
   if (tool === 'navigate' || tool === 'open_tab') {
     try {
       url = new URL(String(input.url))
@@ -179,6 +179,7 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
       throw new Error('navigate needs an absolute http(s) URL.')
     }
   } else {
+    // Without a ref (press on whatever has focus), describe returns only the page's URL.
     d = await call(target, ctx, 'describe', { ref: input.ref, tab: input.tab })
   }
   // An allowance covers one thread on one site: the page's current site, or where navigation goes.
@@ -192,10 +193,18 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
       ? `Open ${url.href} (site **${url.origin}**) in a new background tab.`
       : `Open ${url.href} (site **${url.origin}**) in ${own ? `Amp's tab ${input.tab}` : `the tab lent on ${tab.origin}`}.`
   } else {
-    const element = `${d!.role}${d!.name ? ` “${d!.name}”` : ''}`
-    what = tool === 'click'
-      ? `Click ${element} on ${d!.url}.`
-      : `Type into ${element} on ${d!.url}${input.submit ? ', then press Enter' : ''}:\n\n> ${String(input.text).slice(0, 300) || '(clear the field)'}`
+    const element = d!.role ? `${d!.role}${d!.name ? ` “${d!.name}”` : ''}` : 'the focused element'
+    const enter = input.submit ? ', then press Enter' : ''
+    const text = String((tool === 'fill' ? input.value : input.text) ?? '')
+    // Fill never shows what goes into a password or one-time-code field.
+    const shown = tool === 'fill' && d!.secret ? `(hidden: ${[...text].length} characters)` : text.slice(0, 300) || '(clear the field)'
+    what = {
+      click: () => `Click ${element} on ${d!.url}.`,
+      press: () => `Press ${String(input.key)} on ${element} on ${d!.url}.`,
+      select: () => `Select “${String(input.value)}” in ${element} on ${d!.url}.`,
+      fill: () => `Fill ${element} on ${d!.url}${enter}:\n\n> ${shown}`,
+      type: () => `Type into ${element} on ${d!.url}${enter}:\n\n> ${shown}`,
+    }[tool]!()
   }
   const answer = await ctx.ui.select({
     title: `Amp wants to ${tool} in your browser`,
@@ -211,17 +220,23 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
 
 const ref = { type: 'string', description: 'Element ref such as e12 from the latest browser_snapshot of the same tab.' }
 const tab = { type: 'number', description: 'One of your own tabs, from browser_open_tab. Omit for the tab the user lent.' }
+/** Tools that change the page: the extension refuses them on a read-only tab, and the user approves each. */
+const MUTATING = new Set(['click', 'type', 'fill', 'press', 'select', 'navigate'])
 const tools: { name: string; title: string; description: string; properties?: Record<string, object>; required?: string[] }[] = [
-  { name: 'status', title: 'Browser status', description: "Check whether the user's Chrome is connected, which tab is lent, which thread holds it, and how this thread's latest handoff stands (waiting, continued or ended). Call first, and after a browser_handoff call fails." },
+  { name: 'status', title: 'Browser status', description: "Check whether the user's Chrome is connected, which tab is lent, which thread holds it, and how this thread's latest handoff stands (waiting, continued or ended). Call first, and after a browser_handoff call fails. When it returns `next`, tell the user that step and wait for them; don't retry." },
   { name: 'open_tab', title: 'Open tab', description: "Open a URL in a new background tab of your own, in a collapsed Amp tab group, and return its `tab` id for the other tools. Only you can use it; it closes after 10 idle minutes. Needs the user's approval and their \"Let Amp open its own tabs\" setting. Close it with browser_close_tab when done.", properties: { url: { type: 'string' } }, required: ['url'] },
   { name: 'close_tab', title: 'Close tab', description: 'Close one of your own tabs.', properties: { tab }, required: ['tab'] },
-  { name: 'snapshot', title: 'Read page', description: "Outline of a tab's accessibility tree. Interactive elements get refs (e1, e2, ...) for click and type; refs expire when the page changes.", properties: { tab } },
+  { name: 'snapshot', title: 'Read page', description: "Outline of a tab's accessibility tree, with refs (e1, e2, ...) on interactive elements for the action tools; refs expire when the page changes. Work in a loop: read the page, act with the narrowest tool, then read it again to check, since an action that returned may not have worked.", properties: { tab } },
   { name: 'screenshot', title: 'Screenshot', description: "JPEG of a tab's viewport.", properties: { tab } },
+  { name: 'wait_for', title: 'Wait for page', description: 'Wait until the page shows text, its URL contains url, or an element with role (and name) appears; all given conditions must hold. Fails after timeout_ms. Read the page again afterwards.', properties: { text: { type: 'string', description: 'Text on the page; case-insensitive.' }, url: { type: 'string', description: 'A substring of the URL.' }, role: { type: 'string', description: 'A role as browser_snapshot shows it, such as button or heading.' }, name: { type: 'string', description: "Part of the element's name; needs role." }, timeout_ms: { type: 'number', description: 'Default 10000, at most 20000.' }, tab } },
   { name: 'scroll', title: 'Scroll', description: 'Scroll the page by delta_y pixels (negative scrolls up).', properties: { delta_y: { type: 'number' }, tab }, required: ['delta_y'] },
   { name: 'click', title: 'Click', description: 'Click an element by ref. The user approves each action unless they allowed this thread.', properties: { ref, tab }, required: ['ref'] },
-  { name: 'type', title: 'Type', description: "Replace a field's contents by ref; submit presses Enter afterwards. Needs the user's approval.", properties: { ref, text: { type: 'string' }, submit: { type: 'boolean' }, tab }, required: ['ref', 'text'] },
+  { name: 'type', title: 'Type', description: "Replace a field's contents by ref; submit presses Enter afterwards. Needs the user's approval. Use browser_fill for passwords and one-time codes.", properties: { ref, text: { type: 'string' }, submit: { type: 'boolean' }, tab }, required: ['ref', 'text'] },
+  { name: 'fill', title: 'Fill field', description: "Like browser_type, but on password and one-time-code fields the value is hidden in the approval prompt and the result. Only enter credentials the user gave you; otherwise hand off. Needs the user's approval.", properties: { ref, value: { type: 'string' }, submit: { type: 'boolean' }, tab }, required: ['ref', 'value'] },
+  { name: 'press', title: 'Press key', description: "Press a key such as Enter, Escape, Tab or ArrowDown, optionally with Shift+, Control+, Alt+ or Meta+. With ref it focuses that element first; without, the key goes to whatever has focus. Needs the user's approval.", properties: { key: { type: 'string' }, ref, tab }, required: ['key'] },
+  { name: 'select', title: 'Select option', description: "Choose an option of a <select> by ref, by its value or label. For a custom dropdown, click it, then click the option. Needs the user's approval.", properties: { ref, value: { type: 'string', description: "The option's value or label." }, tab }, required: ['ref', 'value'] },
   { name: 'navigate', title: 'Navigate', description: "Load an HTTP(S) URL in a tab. Needs the user's approval; the lent tab stays on its lent site unless the user allowed other sites.", properties: { url: { type: 'string' }, tab }, required: ['url'] },
-  { name: 'handoff', title: 'Hand tab to user', description: 'Show the user a card on a tab and wait (up to 30 minutes) until they click Continue. Use for logins, 2FA, captchas and payments; never do those yourself. If an earlier call failed while this thread\'s card was still showing, calling it again waits for that card instead of showing a new one.', properties: { message: { type: 'string', description: 'What the user should do, e.g. "Sign in to GitHub, then click Continue".' }, tab }, required: ['message'] },
+  { name: 'handoff', title: 'Hand tab to user', description: 'Show the user a card on a tab and wait (up to 30 minutes) until they click Continue. Use for logins, 2FA, captchas and payments; never solve a captcha or do those yourself, and don\'t retry a site that blocks you. If an earlier call failed while this thread\'s card was still showing, calling it again waits for that card instead of showing a new one.', properties: { message: { type: 'string', description: 'What the user should do, e.g. "Sign in to GitHub, then click Continue".' }, tab }, required: ['message'] },
 ]
 
 async function handoff(target: Target, ctx: PluginToolContext, message: string, tab: unknown) {
@@ -347,7 +362,7 @@ export default async function (amp: PluginAPI) {
           return JSON.stringify(s)
         }
         if (t.name === 'handoff') return handoff(to, ctx, String(input.message ?? ''), input.tab)
-        if (['click', 'type', 'navigate', 'open_tab'].includes(t.name)) await approve(to, ctx, t.name, input)
+        if (MUTATING.has(t.name) || t.name === 'open_tab') await approve(to, ctx, t.name, input)
         if (ctx.signal.aborted) throw new Error('Cancelled.')
         const result = await call(to, ctx, t.name, input)
         if (t.name === 'screenshot') {
