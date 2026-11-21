@@ -108,6 +108,15 @@ last used, inside a collapsed green **Amp** group.
 If a dialog, banner or overlay covers what the agent wants to click, type into, press a key on or
 select in, the action is refused rather than hitting whatever is on top.
 
+**Bot checks.** After a navigation or `browser_open_tab`, and with every snapshot, the extension
+checks whether the page is a bot challenge (Cloudflare's "Just a moment...", a captcha wall,
+PerimeterX "Press & Hold", DataDome) or a block page ("Sorry, you have been blocked", "Access Denied"). A check that clears by
+itself gets up to 12 seconds. If it's still there, the result tells the agent to hand the tab to you
+with `browser_handoff`; on a block page it tells the agent to stop. It never tries to solve one.
+Detection, adapted from [OpenCode Browse](https://github.com/anomalyco/browse), reads only the title,
+the first part of the text, frame and script URLs and a few vendor element IDs, and counts generic
+phrases only on short pages, so an article about captchas or a login form with one isn't flagged.
+
 ## Troubleshooting
 
 The setup page is the first place to look; each red step says how to fix it:
@@ -141,7 +150,7 @@ The common cases:
 | `browser_screenshot` | JPEG of the viewport |
 | `browser_wait_for` | Wait (up to 20 seconds) for text, a URL or an element by role and name to appear |
 | `browser_scroll` | Scroll by a number of pixels |
-| `browser_click`, `browser_type`, `browser_navigate` | Act on the page, after your approval |
+| `browser_click`, `browser_type`, `browser_navigate` | Act on the page, after your approval. `browser_navigate` waits for the page and reports a bot check or block page |
 | `browser_fill` | Like `browser_type`, but hides the value of password and one-time-code fields in the approval prompt and the result |
 | `browser_press` | Press a key such as Enter, Escape or Tab, on a ref or on whatever has focus, after your approval |
 | `browser_select` | Choose an option of a `<select>` by value or label, after your approval |
@@ -242,8 +251,12 @@ only take Amp-hosted plugin URLs, not GitHub ones.
 
 ```sh
 bun install
-bun run check   # type check, syntax check the extension, run the bridge tests
+bun run check   # type check, syntax check the extension, run the tests
 ```
+
+`test/fixtures/challenges/` holds what the challenge probe read from real challenge, block and
+ordinary pages, with IP addresses and query values scrubbed; `test/challenge.test.ts` checks how
+each is classified. Add a page there when detection misses one or flags one wrongly.
 
 After changing `extension/`, click **Reload** on its card in `chrome://extensions`.
 

@@ -1,0 +1,24 @@
+{
+  "source": "https://www.hcaptcha.com/",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "https://www.hcaptcha.com/",
+    "title": "hCaptcha: Real-Time Bot Detection & Fraud Prevention",
+    "text": "From the blog:\nhCaptcha CAPTCHAs: Highly Effective Against Bots and Agents in 2026 →\nAccessibility\nPlatform\nUse Cases\nPricing\nResources\nContact Sales\nSign Up\nLog In\n\nhCaptcha Enterprise\n\nUnderstand intent. Stop abuse.\n\n\nProtect your services from automated and human threats, while preserving user privacy.\n\nGet Started\n\nor Contact Sales\n\nLooking for hCaptcha Free or Pro?\n\ncompare plans\n\nBot Detection\nFraud Protection\nAccount Defense\nPrivate Learning\nAI Bot Detection\nThe world’s most accurate real-time bot detection. Stay ahead of persistent threat actors while preserving user privacy.\nLearn More\nProtecting category leaders in every industry\nhCaptcha Enterprise is the leader in privacy-first online security, used to protect hundreds of millions of people around the world.\nDeploy in minutes\nSwitch from reCAPTCHA with two lines of code.\nUniversal Support: Hundreds of plugins and native integrations simplify rollout.\nComprehensive Security On Demand\nOne integration, many use cases\nBad Bots\nHuman Abuse\nAccount Takeovers\nCredential Stuffing\nPurchase Fraud\nCard Testing\nChargeback Fraud\nSMS Tolling Fraud\nPlatform Abuse\nAffiliate Fraud\nUltra low friction, fully customizable\nWith passive and No-CAPTCHA modes, server side API protection and more, hCaptcha Enterprise is a complete security platform. From threat models to custom themes, get exactly the behavior you want.\nCompliant and Universal\nWorks in every country\nUnique Zero PII features simplify global compliance for regulated industries. Enable trust and safety while exceeding privacy standards like GDPR, CCPA, and HIPAA.\nDesigned for accessibility\nFlexible options to meet both your security and WCAG 2.1 accessibility requirements, from text-based challenges to our passive Universal Accessibility system.\nRequest a VPAT\nA new kind of MFA. Zero tolling attacks.\n\nWe flipped the script on SMS\n\nStronger Verification\nUnlike push-based SMS, hCaptcha MFA uses a pull-based approach that simplifies the user experience and eliminates toll fraud, making it more secure by design.\nRicher Signals for ATO Detection\nSMS alone is unreliable. Combining pull-based SMS with Account Defense gives you a deeper, more accurate picture of account takeover attempts.\nFind Threats Without Fingerprinting Your Users\nTraditional fingerprints are becoming useless for stopping attacks. Browser makers are working to break them, and attackers can easily emulate them.\nUse Advanced Threat Signatures\nOur Advanced Threat Signatures are a breakthrough in security ML, clustering attackers across thousands of IPs and devices while separating all good traffic into just one or a few signatures.\nStop Account Takeovers\nhCaptcha Enterprise is not just a great way to stop credential stuffing and other high volume attacks. Find post-login and intra-session attacks, without sharing user data or personal information with us.\nFind Human Fraud and Abuse Fast\nPrivate Learning is a Revolution in Security ML\nLearn why over 60% of the top online payment process",
+    "textLength": 7207,
+    "frameUrls": [
+      "https://newassets.hcaptcha.com/captcha/v1/7b6de2b378178a05e8aa25e42494ec5883aa37f6/static/hcaptcha.html",
+      "https://newassets.hcaptcha.com/captcha/v1/7b6de2b378178a05e8aa25e42494ec5883aa37f6/static/hcaptcha.html"
+    ],
+    "scriptSrcs": [
+      "https://u.hcaptcha.com/static/array.js",
+      "https://js.hcaptcha.com/1/api.js?render=explicit&onload=onLoad",
+      "https://www.hcaptcha.com/js/analytics.js",
+      "https://www.hcaptcha.com/js/translations.js",
+      "https://www.hcaptcha.com/js/form-handlers.js",
+      "https://www.hcaptcha.com/js/site-interactions.js"
+    ],
+    "selectors": [],
+    "visibleSelectors": []
+  }
+}

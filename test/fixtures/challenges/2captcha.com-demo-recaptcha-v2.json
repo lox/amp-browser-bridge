@@ -1,0 +1,32 @@
+{
+  "source": "https://2captcha.com/demo/recaptcha-v2",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "https://2captcha.com/demo/recaptcha-v2",
+    "title": "Google reCAPTCHA v2 demo: Sample Form with Google reCAPTCHA v2",
+    "text": "To home page\nCaptcha solver\nEntry job\nAPI\nProxy\nScrapers\nData for AI\nResources\nSign up\nLog in\nreCAPTCHA v2 demo\n\nThis page explains how reCAPTCHA v2 is displayed and how reCAPTCHA v2 verification works. reCAPTCHA v2 also known as \"I'm not a robot\" reCAPTCHA is a very popular type of captcha that looks like this:\n\nCheck\nReset\n\nIn many cases reCAPTCHA v2 hinder accessibility, frustrate users, limits access to open information, makes testing application and sites difficult. Use reCAPTCHA v2 solver for automatic bypass.\n\nreCAPTCHA v2 solver\nAPI\n\nHow to solve reCAPTCHA v2\n\nOpen developer's console in your browser and find element with data-sitekey attribute.\n\n<div class=\"g-recaptcha\" data-sitekey=\"6LfD3PIbAAAAAJs_eEHvoOl75_83eXSqpPSRFJ_u\" id=\"recaptcha\"></div>\nCopy code snippet\n\nSend sitekey and pageurl to our API.\n\nWith SDK (recommended):\nPHP\n// https://github.com/2captcha/2captcha-php\n\nrequire(__DIR__ . '/../src/autoloader.php');\n\n$solver = new \\TwoCaptcha\\TwoCaptcha('YOUR_API_KEY');\n\ntry {\n    $result = $solver->recaptcha([\n        'sitekey' => '6LfD3PIbAAAAAJs_eEHvoOl75_83eXSqpPSRFJ_u',\n        'url'     => 'https://2captcha.com/demo/recaptcha-v2',\n    ]);\n} catch (\\Exception $e) {\n    die($e->getMessage());\n}\n\ndie('Captcha solved: ' . $result->code);\nCopy code snippet\nPython\nJava\nC#\nGo\nC++\nRuby\n\nWait for the result, which may look like this:\n\n03AGdBq27lvCYmKkaqDdxWLfMe3ovADGfGlSyiR-fN_EJrZGniTAmdH1XSjK8ralsctfjOLX2K0T7dJfxPqqga8dtSG2Lmns8Gk2ckcU6PQzUFieBqrtpkr5PPwnngew0Rnot2ik1y8m202u6pHTIquExlEYSlzS8vfoyPPt8fCf-Zrbu8vWkiY8Ogj17ommHMgkguZbmEyOdfLTXzhRko-a655_jJdCMjEtMxva-b78DnGlXu9d0o6vEmrw9n8ABu4lLsWnIbYPH0beXRRIkUE3si64Xhwkh1aO3L1HaIR3sfR0vOs3GV1OBzry_tFsZM0ZhSQovKJwjLlotrYajyTSRv3hgvXtLlLxXzbAwgeI91-wM7AFEte0uO_DhcNajxZr7E50wU9vuAe_drGWe4q-hNx4PQPenjaw\n\nManually:\n\nSend GET or POST request to our API URL: https://2captcha.com/in.php with method set to userrecaptcha and provide the value found on previous step as value for googlekey and full page URL as value for pageurl.\nRequest example:\nGET https://2captcha.com/in.php?key=x&method=x&googlekey=x&pageurl=x\n\nIf everything is fine server will return the ID of your captcha:\n\nOK|2122988149\nOtherwise server will return an error code.\n\nAfter 1-2 sec. send GET request to get the result:\n\nGET https://2captcha.com/res.php?key=x&action=get&id=x\nIf captcha is already solved server will respond with the answer token:\n\nOK|03AHJ_Vuve5Asa4koK3KSMyUkCq0vUFCR5Im4CwB7PzO3dCxIo11i53epEraq-uBO5mVm2XRikL8iKOWr0aG50sCuej9bXx5qcviUGSm4iK4NC_Q88flavWhaTXSh0VxoihBwBjXxwXuJZ-WGN5Sy4dtUl2wbpMqAj8Zwup1vyCaQJWFvRjYGWJ_TQBKTXNB5CCOgncqLetmJ6B6Cos7qoQyaB8ZzBOTGf5KSP6e-K9niYs772f53Oof6aJeSUDNjiKG9gN3FTrdwKwdnAwEYX-F37sI_vLB1Zs8NQo0PObHYy0b0sf7WSLkzzcIgW9GR0FwcCCm1P8lB-50GQHPEBJUHNnhJyDzwRoRAkVzrf7UkV8wKCdTwrrWqiYDgbrzURfHc2ESsp020MicJTasSiXmNRgryt-gf50q5BMkiRH7osm4DoUgsjc_XyQiEmQmxl5sqZP7aKsaE-EM00x59XsPzD3m3YI",
+    "textLength": 4943,
+    "frameUrls": [
+      "https://www.google.com/recaptcha/api2/anchor?ar=1&k=x&co=x&hl=en&v=x&size=normal&anchor-ms=20000&execute-ms=30000&ovv=CADq00gF&cb=x",
+      "https://www.google.com/recaptcha/api2/bframe?hl=en&v=x&k=x&bft=x",
+      "https://cdn.respond.io/webchat/widget/chat.html?colorScheme=light"
+    ],
+    "scriptSrcs": [
+      "https://www.gstatic.com/recaptcha/releases/4i3aN5wAweL7i3ADI7BSX4B-/recaptcha__en.js",
+      "https://scripts.clarity.ms/0.8.80-beta/clarity.js",
+      "https://www.clarity.ms/tag/9jyufuwuau?ref=gtm2",
+      "https://www.googletagmanager.com/gtm.js?id=x",
+      "https://2captcha.com/dist/web/assets/index-DYFYe1NQ.js",
+      "https://www.google.com/recaptcha/api.js?onload=x&render=explicit",
+      "https://cdn.respond.io/webchat/widget/widget.js?cId=x&shouldHideWidget=true",
+      "https://2captcha.com/dist/web/assets/polyfills-legacy-CJjoO1TL.js",
+      "https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092"
+    ],
+    "selectors": [
+      ".g-recaptcha"
+    ],
+    "visibleSelectors": [
+      ".g-recaptcha"
+    ]
+  }
+}

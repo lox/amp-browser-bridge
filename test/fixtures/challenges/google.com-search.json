@@ -1,0 +1,24 @@
+{
+  "source": "https://www.google.com/search?q=weather",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "https://www.google.com/sorry/index?continue=x&q=x",
+    "title": "https://www.google.com/search?q=weather&sei=x",
+    "text": "\n\nAbout this page\n\nOur systems have detected unusual traffic from your computer network. This page checks to see if it's really you sending the requests, and not a robot. Why did this happen?\n\n\n\nIP address: 203.0.113.7\nTime: 2026-11-21T21:14:15Z\nURL: https://www.google.com/search?q=weather&sei=x\n",
+    "textLength": 320,
+    "frameUrls": [
+      "https://www.google.com/recaptcha/enterprise/anchor?ar=1&k=x&co=x&hl=en&v=x&size=normal&s=x&anchor-ms=20000&execute-ms=30000&ovv=CADq00gF&cb=x",
+      "https://www.google.com/recaptcha/enterprise/bframe?hl=en&v=x&k=x&bft=x"
+    ],
+    "scriptSrcs": [
+      "https://www.gstatic.com/recaptcha/releases/4i3aN5wAweL7i3ADI7BSX4B-/recaptcha__en.js",
+      "https://www.google.com/recaptcha/enterprise.js"
+    ],
+    "selectors": [
+      ".g-recaptcha"
+    ],
+    "visibleSelectors": [
+      ".g-recaptcha"
+    ]
+  }
+}

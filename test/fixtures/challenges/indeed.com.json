@@ -1,0 +1,14 @@
+{
+  "source": "https://www.indeed.com/",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "https://www.indeed.com/",
+    "title": "Blocked - Indeed.com",
+    "text": "Find jobs\nCompany Reviews\nFind salaries\nUpload your resume\nSign in\nEmployers / Post Job\nRequest Blocked\n\nYou have been blocked. If you believe this in error, please go to support.indeed.com and reference the following information:\n\nYour Ray ID for this request is a5e2b3404dd65ea8\n\nYour current IP for this request is 203.0.113.7\n\nReturn home\n  →\n\nTroubleshooting Cloudflare Errors\n\nNeed more help? Contact us",
+    "textLength": 410,
+    "frameUrls": [],
+    "scriptSrcs": [],
+    "selectors": [],
+    "visibleSelectors": []
+  }
+}

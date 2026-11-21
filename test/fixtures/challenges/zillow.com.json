@@ -1,0 +1,23 @@
+{
+  "source": "https://www.zillow.com/",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "https://www.zillow.com/",
+    "title": "Access to this page has been denied",
+    "text": "Press & Hold to confirm you are\na human (and not a bot).\nReference ID 74769127-e5f0-11f1-8934-609db7636943",
+    "textLength": 106,
+    "frameUrls": [],
+    "scriptSrcs": [
+      "https://www.zillow.com/HYx10rg3/captcha/captcha.js?a=c&u=x&v=&m=0&b=x&h=R0VU",
+      "https://client.px-cloud.net/PXHYx10rg3/main.min.js"
+    ],
+    "selectors": [
+      "#px-captcha",
+      "#px-captcha-wrapper",
+      "[id^='px-captcha']"
+    ],
+    "visibleSelectors": [
+      "#px-captcha"
+    ]
+  }
+}

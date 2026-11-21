@@ -1,0 +1,25 @@
+{
+  "source": "https://www.fiverr.com/",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "https://www.fiverr.com/",
+    "title": "It needs a human touch",
+    "text": "It needs a human touch\n\nComplete the task and we’ll get you right back into Fiverr.\n\n\n\n\n\nQuick fixes\nDisable any browser extensions that could be interfering with the website. This includes Ad blockers, privacy extensions, or VPNs that may modify web traffic.\nClear your browser's cache and cookies. Outdated or corrupt cache data can cause issues with how the webpage loads and operates.\nMake sure Javascript is enabled in your browser and update your browser to the latest version.\n\nERRCODE PXCR10002539\n\nRequest details:\n\nip: 203.0.113.7\ntraceId: 7212739f4b9e4d1f93be60f3f17e10d8",
+    "textLength": 583,
+    "frameUrls": [
+      "https://js.crcldu.com/?t=x&v=x&h=x&a=x"
+    ],
+    "scriptSrcs": [
+      "https://client.px-cloud.net/PXK3bezZfO/main.min.js",
+      "https://captcha.px-cdn.net/PXK3bezZfO/captcha.js?a=c&m=0&cors=1"
+    ],
+    "selectors": [
+      "#px-captcha",
+      "[id^='px-captcha']"
+    ],
+    "visibleSelectors": [
+      "#px-captcha",
+      "[id^='px-captcha']"
+    ]
+  }
+}

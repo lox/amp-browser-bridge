@@ -1,0 +1,41 @@
+{
+  "source": "https://www.adidas.com/us",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "https://www.adidas.com/us",
+    "title": "adidas",
+    "text": "adidas\n\nReference Error: 18.666c3817.1795295759.607c6d26\nUNFORTUNATELY WE ARE UNABLE TO GIVE YOU ACCESS TO OUR SITE AT THIS TIME.\n\nA security issue was automatically identified, when you tried to access the website.\n\nWhat could have caused this?\n\nDuring high-traffic product releases we have extra security in place to prevent bots entering our site. We do this to protect customers and to give everyone a fair chance of getting the sneakers. Something in your setup must have triggered our security system, so we cannot allow you onto the site.\n\nHow can I resolve this?\n\nPlease try refreshing or accessing our website from a different browser or another device. You could also check if there are any scripts, like ad blockers, running in your browser and disable them.\n\nIf this does not help, the issue might be caused by malware. If you're on a personal connection you can run an anti-virus scan on your device to make sure it's not affected by malware. If you're on a shared network, you could ask the system administrator to run a scan looking for misconfigured or infected devices across the network.\n\nHTTP 403 - Forbidden",
+    "textLength": 1127,
+    "frameUrls": [
+      "https://insight.adsrvr.org/track/cei?advertiser_id=ygdrgdy&cookie_sync=1&upv=3.0.0&upid=186z53b&ref=x"
+    ],
+    "scriptSrcs": [
+      "https://datacloud.tealiumiq.com/tealium_ttd/main/16/i.js?jsonp=x",
+      "https://10973357.collect.igodigital.com/collect.js",
+      "https://se.monetate.net/js/2/a-24f48522/p/adidas.us/custom.js",
+      "https://js.adsrvr.org/up_loader.3.0.0.js",
+      "https://p.teads.tv/teads-fellow.js",
+      "https://www.googletagmanager.com/gtag/js",
+      "https://www.redditstatic.com/ads/pixel.js",
+      "https://www.adidas.com/gofipamo/gtag/js",
+      "https://connect.facebook.net/signals/config/680435655455279?v=2.9.441&r=stable&domain=x&hme=x&ex_m=x",
+      "https://connect.facebook.net/signals/config/3122845081335855?v=2.9.441&r=stable&domain=x&hme=x&ex_m=x",
+      "https://connect.facebook.net/en_US/fbevents.js",
+      "https://tags.tiqcdn.com/utag/tiqapp/utag.currency.js?utv=x",
+      "https://tags.tiqcdn.com/utag/adidas/adidasglobal/prod/utag.349.js?utv=x",
+      "https://tags.tiqcdn.com/utag/adidas/adidasglobal/prod/utag.474.js?utv=x",
+      "https://tags.tiqcdn.com/utag/adidas/adidasglobal/prod/utag.514.js?utv=x",
+      "https://tags.tiqcdn.com/utag/adidas/adidasglobal/prod/utag.447.js?utv=x",
+      "https://tags.tiqcdn.com/utag/adidas/adidasglobal/prod/utag.394.js?utv=x",
+      "https://tags.tiqcdn.com/utag/adidas/adidasglobal/prod/utag.483.js?utv=x",
+      "https://tags.tiqcdn.com/utag/adidas/adidasglobal/prod/utag.504.js?utv=x",
+      "https://visitor-service-us-east-1.tealiumiq.com/adidas/cdpadidasus/01a1fff74cc7000b9a68e44078ef0506d001906500590adidascdpadidasus?callback=x&rnd=x",
+      "https://tags.tiqcdn.com/utag/adidas/adidasglobal/prod/utag.v.js?a=x&cb=x",
+      "https://f.monetate.net/trk/4/s/a-24f48522/p/adidas.us/854812111-0?mr=x&mi=x&cs=%21t&e=x&pt=ERROR&r=%27%27&sw=800&sh=600&sc=24&j=%21f&u=x&fl=%21f&hvc=%21t&eoq=%21t",
+      "https://tags.tiqcdn.com/utag/adidas/adidasglobal/prod/utag.js",
+      "https://js.adsrvr.org/uid2-sdk-4.0.1.js"
+    ],
+    "selectors": [],
+    "visibleSelectors": []
+  }
+}
