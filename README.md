@@ -258,11 +258,18 @@ only take Amp-hosted plugin URLs, not GitHub ones.
 ```sh
 bun install
 bun run check   # type check, syntax check the extension, run the tests
+CHROME_BIN=/path/to/chromium bun run e2e   # the real extension in headless Chrome against a real bridge
 ```
 
 `test/fixtures/challenges/` holds what the challenge probe read from real challenge, block and
 ordinary pages, with IP addresses and query values scrubbed; `test/challenge.test.ts` checks how
 each is classified. Add a page there when detection misses one or flags one wrongly.
+
+`bun run e2e` runs each `test/e2e/*.e2e.ts` on a fresh bridge home and Chrome profile, using ports
+8765, 9333 and 19989, so quit a running bridge first. `CHROME_BIN` must be Chromium or Chrome for
+Testing; branded Chrome ignores `--load-extension`. Pass a name to run one script, such as
+`bun run e2e lend`. CI runs both on Buildkite with
+[`.buildkite/pipeline.yml`](.buildkite/pipeline.yml).
 
 After changing `extension/`, click **Reload** on its card in `chrome://extensions`.
 
