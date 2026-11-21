@@ -39,7 +39,7 @@ function bridge(setup?: (dir: string) => void) {
   return { b, dir, base, api, signed, call, advance: (ms: number) => (clock += ms), code: () => readFileSync(join(dir, 'pairing-code'), 'utf8').trim() }
 }
 
-type Pairing = { key?: string; code?: string; tab?: object; handoff?: string }
+type Pairing = { key?: string; code?: string; tab?: object; agent_tabs?: object; handoff?: string }
 
 /**
  * A fake extension that runs the handshake with extension/pairing.js, then answers commands with an
@@ -60,7 +60,7 @@ function extension(base: string, pairing: Pairing, answer = true) {
   const exchange = pairing.code ? P.codeExchange(pairing.code) : null
   let bridgeNonce = ''
   let session: Uint8Array
-  const auth = async () => out({ type: 'auth', proof: await P.keyProof(key, 'extension', port, nonce, bridgeNonce), tab: pairing.tab, handoff: pairing.handoff })
+  const auth = async () => out({ type: 'auth', proof: await P.keyProof(key, 'extension', port, nonce, bridgeNonce), tab: pairing.tab, agent_tabs: pairing.agent_tabs, handoff: pairing.handoff })
   const closed = new Promise<number>((resolve) => (ws.onclose = (e) => resolve(e.code)))
   const ready = new Promise<void>((resolve) => {
     ws.onmessage = async (e) => {
@@ -387,7 +387,7 @@ test('tells the extension where the bridge is published, and when that changes',
 
 test("Amp's own tabs skip the lent tab's lease, and each thread sees only its own", async () => {
   const { base, call, api, code } = bridge()
-  const ext = extension(base, { type: 'hello', code: code(), agent_tabs: { enabled: true, tabs: [{ tab: 7, thread: A, title: 'a', url: 'https://a.test/' }] } })
+  const ext = extension(base, { code: code(), agent_tabs: { enabled: true, tabs: [{ tab: 7, thread: A, title: 'a', url: 'https://a.test/' }] } })
   await ext.ready
   expect((await call(A, 'snapshot')).result.echoed).toBe('snapshot')
   // B can't take the lent tab from A, but can open and use tabs of its own; the extension checks ownership.
@@ -406,7 +406,7 @@ test("Amp's own tabs skip the lent tab's lease, and each thread sees only its ow
 
 test("an agent-tab handoff can't skip the lease with a bad tab id, and only its thread can wait on it", async () => {
   const { base, call, api, code } = bridge()
-  const ext = extension(base, { type: 'hello', code: code() })
+  const ext = extension(base, { code: code() })
   await ext.ready
   await call(A, 'snapshot')
   const bad = await api('/call', B, { method: 'POST', body: JSON.stringify({ tool: 'handoff', args: { message: 'x', tab: '8' } }) })
