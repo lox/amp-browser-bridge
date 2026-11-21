@@ -54,6 +54,10 @@ async function request(target: Target, thread: string, path: string, init: Reque
       if (command) return { error: `The request to the bridge ${init.signal?.aborted ? 'was cancelled' : `failed (${error?.message ?? error})`}; the outcome is unknown.`, unknown: true }
       throw error
     }
+    // The portal answers 502-504 while the runner restarts; the bridge itself never does.
+    if (!command && target.portal && res.status >= 502 && res.status <= 504) {
+      throw Object.assign(new Error(`The bridge portal is temporarily unavailable (HTTP ${res.status}).`), { transient: true })
+    }
     if ((res.headers.get('content-type') ?? '').includes('application/json')) return res.json()
     const text = await res.text()
     if (res.status === 401 && text === 'unauthorized') throw new Error('The bridge rejected BROWSER_BRIDGE_TOKEN. Publish the bridge again from a thread on the Mac.')
@@ -136,8 +140,18 @@ async function handoff(target: Target, ctx: PluginToolContext, message: string) 
   const { handoff_id: id } = await call(target, ctx, 'handoff', { message })
   try {
     // Poll in short requests: a single half-hour request would not survive the portal proxy.
+    let outage = 0
     while (!ctx.signal.aborted) {
-      const reply = await request(target, ctx.thread.id, `/handoff/${id}?wait=25000`, { signal: ctx.signal })
+      let reply: any
+      try {
+        reply = await request(target, ctx.thread.id, `/handoff/${id}?wait=25000`, { signal: ctx.signal })
+        outage = 0
+      } catch (error: any) {
+        // Keep waiting through a short portal outage; the card stays on the page meanwhile.
+        if (!error?.transient || ++outage > 40) throw error
+        await Bun.sleep(3000)
+        continue
+      }
       if (reply.error) throw new Error(reply.error)
       if (!reply.result?.waiting) return JSON.stringify(reply.result)
     }
