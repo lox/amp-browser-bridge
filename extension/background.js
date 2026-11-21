@@ -446,7 +446,10 @@ async function groupTab(tabId) {
   try {
     const groupId = await chrome.tabs.group({tabIds: [tabId]});
     await chrome.tabGroups.update(groupId, {title: GROUP_TITLE, color: "green", collapsed: false});
-    await session.set("lend", {...(await getLend()), groupId});
+    const lend = {...(await getLend()), groupId};
+    await session.set("lend", lend);
+    // Session storage dies with a reload; this local record lets startup undo exactly this group.
+    await chrome.storage.local.set({ampGroup: {tabId, groupId, previousGroup: lend.previousGroup}});
   } catch {
     // Grouping is a hint, never a reason to refuse a lend (some Chromium browsers lack tab groups).
   }
@@ -478,6 +481,7 @@ async function stop() {
   if (current) {
     await chrome.action.setBadgeText({tabId: current.tabId, text: ""}).catch(() => {});
     await ungroupTab(current);
+    await chrome.storage.local.remove("ampGroup");
     await chrome.debugger.detach({tabId: current.tabId}).catch(() => {});
   }
   send({type: "tab", tab: null});
@@ -549,15 +553,17 @@ chrome.runtime.onInstalled.addListener(({reason}) => {
 
 /**
  * A reload or update of the extension ends the lend without running stop(), which would leave the
- * tab in the Amp group. With nothing lent, ungroup every tab still in a green "Amp" group.
+ * tab in the Amp group. With nothing lent, put back only the tab and group this extension recorded,
+ * and only while that group still looks like ours, so a group the user made is never touched.
  */
 async function clearStaleGroups() {
-  if (await getLend()) return;
-  const groups = await chrome.tabGroups.query({title: GROUP_TITLE, color: "green"}).catch(() => []);
-  for (const group of groups) {
-    const tabs = await chrome.tabs.query({groupId: group.id});
-    if (tabs.length) await chrome.tabs.ungroup(tabs.map((t) => t.id)).catch(() => {});
-  }
+  const {ampGroup} = await chrome.storage.local.get("ampGroup");
+  if (!ampGroup || await getLend()) return;
+  const group = await chrome.tabGroups.get(ampGroup.groupId).catch(() => null);
+  if (group?.title === GROUP_TITLE && group.color === "green") await ungroupTab(ampGroup);
+  // A lend that started meanwhile records its own group; keep that record.
+  const {ampGroup: now} = await chrome.storage.local.get("ampGroup");
+  if (now?.groupId === ampGroup.groupId) await chrome.storage.local.remove("ampGroup");
 }
 
 connect();
