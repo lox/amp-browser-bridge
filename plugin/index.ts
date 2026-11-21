@@ -187,40 +187,41 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
 
 const ref = { type: 'string', description: 'Element ref such as e12 from the latest browser_snapshot.' }
 const tools: { name: string; title: string; description: string; properties?: Record<string, object>; required?: string[] }[] = [
-  { name: 'status', title: 'Browser status', description: "Check whether the user's Chrome is connected, which tab is lent, and which thread holds it. Call first." },
+  { name: 'status', title: 'Browser status', description: "Check whether the user's Chrome is connected, which tab is lent, which thread holds it, and how this thread's latest handoff stands (waiting, continued or ended). Call first, and after a browser_handoff call fails." },
   { name: 'snapshot', title: 'Read page', description: "Outline of the lent tab's accessibility tree. Interactive elements get refs (e1, e2, ...) for click and type; refs expire when the page changes." },
   { name: 'screenshot', title: 'Screenshot', description: "JPEG of the lent tab's viewport." },
   { name: 'scroll', title: 'Scroll', description: 'Scroll the page by delta_y pixels (negative scrolls up).', properties: { delta_y: { type: 'number' } }, required: ['delta_y'] },
   { name: 'click', title: 'Click', description: 'Click an element by ref. The user approves each action unless they allowed this thread.', properties: { ref }, required: ['ref'] },
   { name: 'type', title: 'Type', description: "Replace a field's contents by ref; submit presses Enter afterwards. Needs the user's approval.", properties: { ref, text: { type: 'string' }, submit: { type: 'boolean' } }, required: ['ref', 'text'] },
   { name: 'navigate', title: 'Navigate', description: "Load an HTTP(S) URL in the lent tab. Needs the user's approval; the tab stays on its lent site unless the user allowed other sites.", properties: { url: { type: 'string' } }, required: ['url'] },
-  { name: 'handoff', title: 'Hand tab to user', description: 'Show the user a card on the lent tab and wait (up to 30 minutes) until they click Continue. Use for logins, 2FA, captchas and payments; never do those yourself.', properties: { message: { type: 'string', description: 'What the user should do, e.g. "Sign in to GitHub, then click Continue".' } }, required: ['message'] },
+  { name: 'handoff', title: 'Hand tab to user', description: 'Show the user a card on the lent tab and wait (up to 30 minutes) until they click Continue. Use for logins, 2FA, captchas and payments; never do those yourself. If an earlier call failed while this thread\'s card was still showing, calling it again waits for that card instead of showing a new one.', properties: { message: { type: 'string', description: 'What the user should do, e.g. "Sign in to GitHub, then click Continue".' } }, required: ['message'] },
 ]
 
 async function handoff(target: Target, ctx: PluginToolContext, message: string) {
-  const { handoff_id: id } = await call(target, ctx, 'handoff', { message })
-  try {
-    // Poll in short requests: a single half-hour request would not survive the portal proxy.
-    let outage = 0
-    while (!ctx.signal.aborted) {
-      let reply: any
-      try {
-        reply = await request(target, ctx.thread.id, `/handoff/${id}?wait=25000`, { signal: ctx.signal })
-        outage = 0
-      } catch (error: any) {
-        // Keep waiting through a short portal outage; the card stays on the page meanwhile.
-        if (!error?.transient || ++outage > 40) throw error
+  // If this thread's earlier call lost its wait, the bridge hands back that card instead of a new one.
+  const { handoff_id: id, resumed, message: shown } = await call(target, ctx, 'handoff', { message })
+  // Poll in short requests: a single half-hour request would not survive the portal proxy.
+  let outage = 0
+  while (!ctx.signal.aborted) {
+    let reply: any
+    try {
+      reply = await request(target, ctx.thread.id, `/handoff/${id}?wait=25000`, { signal: ctx.signal })
+      outage = 0
+    } catch (error: any) {
+      if (ctx.signal.aborted) break
+      // Keep waiting through a short portal outage; the card stays on the page meanwhile.
+      if (error?.transient && ++outage <= 40) {
         await Bun.sleep(3000)
         continue
       }
-      if (reply.error) throw new Error(reply.error)
-      if (!reply.result?.waiting) return JSON.stringify(reply.result)
+      // The card may still be on the page, and the user may still finish there.
+      throw new Error(`Lost the wait for the handoff (${error?.message ?? error}). The card may still be showing: call browser_handoff again to keep waiting for it, or browser_status to see whether the user continued.`)
     }
-    throw new Error('Cancelled.')
-  } catch (error) {
-    if (ctx.signal.aborted) await request(target, ctx.thread.id, `/handoff/${id}/cancel`, { method: 'POST' }).catch(() => {})
-    throw error
+    if (reply.error) throw new Error(reply.error)
+    if (!reply.result?.waiting) return JSON.stringify(resumed ? { ...reply.result, resumed_handoff: shown } : reply.result)
   }
+  await request(target, ctx.thread.id, `/handoff/${id}/cancel`, { method: 'POST' }).catch(() => {})
+  throw new Error('Cancelled.')
 }
 
 export default async function (amp: PluginAPI) {
@@ -315,6 +316,7 @@ export default async function (amp: PluginAPI) {
           const s = await request(to, ctx.thread.id, '/status', { signal: ctx.signal })
           if (!s.extension_connected) return JSON.stringify({ ...s, next: 'Ask the user to open Chrome; the extension connects to the bridge by itself.' })
           if (!s.tab) return JSON.stringify({ ...s, next: 'Ask the user to open the page and click Lend this tab in the extension popup.' })
+          if (s.handoff?.state === 'waiting') return JSON.stringify({ ...s, next: 'Your handoff card is still waiting for the user. Call browser_handoff again to wait for it; the tab stays theirs until they click Continue.' })
           return JSON.stringify(s)
         }
         if (t.name === 'handoff') return handoff(to, ctx, String(input.message ?? ''))
