@@ -547,6 +547,20 @@ chrome.runtime.onInstalled.addListener(({reason}) => {
   if (reason === "install") chrome.tabs.create({url: chrome.runtime.getURL("setup.html")});
 });
 
+/**
+ * A reload or update of the extension ends the lend without running stop(), which would leave the
+ * tab in the Amp group. With nothing lent, ungroup every tab still in a green "Amp" group.
+ */
+async function clearStaleGroups() {
+  if (await getLend()) return;
+  const groups = await chrome.tabGroups.query({title: GROUP_TITLE, color: "green"}).catch(() => []);
+  for (const group of groups) {
+    const tabs = await chrome.tabs.query({groupId: group.id});
+    if (tabs.length) await chrome.tabs.ungroup(tabs.map((t) => t.id)).catch(() => {});
+  }
+}
+
 connect();
+clearStaleGroups();
 // Earlier versions set the badge for every tab; clear that before showing the per-tab one.
 chrome.action.setBadgeText({text: ""}).then(badge);
