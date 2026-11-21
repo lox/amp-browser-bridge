@@ -518,10 +518,14 @@ async function continueHandoff() {
 async function lend(tabId) {
   const tab = await chrome.tabs.get(tabId);
   if (!/^https?:/.test(tab.url || "")) throw new Error("Chrome only lets extensions control normal web pages, not browser pages or the Web Store.");
+  const busy = "Amp is using this tab right now. Try again in a moment.";
+  if ((await getAgentTabs())[tabId] && running.get(tabId) > 0) throw new Error(busy);
   const previous = await getLend();
   if (previous && previous.tabId !== tabId) await stop();
   // Lending one of Amp's own tabs makes it yours: it gets the lent tab's limits instead.
+  // Not while a command runs in it: that command was allowed more than a lent tab is.
   const wasAgent = await updateAgentTabs((tabs) => {
+    if (tabs[tabId] && running.get(tabId) > 0) throw new Error(busy);
     const had = !!tabs[tabId];
     delete tabs[tabId];
     return had;
