@@ -55,7 +55,7 @@ minutes and no terminal.
 2. **Load the extension.** [Download this repository](https://github.com/lox/amp-browser-bridge/archive/refs/heads/main.zip)
    and unzip it. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**,
    and pick the `extension` folder. Pin the extension from Chrome's puzzle-piece menu. It always
-   gets the ID `goknnphohomgekkahpdiphdfladfnmoc`, which is how Amp finds its setup page.
+   gets the ID `goknnphohomgekkahpdiphdfladfnmoc`.
 
    Chrome opens a setup page that follows the remaining steps live and says what to do at any
    step that fails. Reopen it any time from the popup's **Setup and status** link.
@@ -240,8 +240,12 @@ portal URL, owning thread and time, never the token), so the setup page can show
 run the bridge without Amp: `bun plugin/host.ts`.
 
 The setup page (`extension/setup.html`) finds the bridge by its `401` answer on
-`http://127.0.0.1:19989/status`, and learns about publishing from a
-`{type: "published", published: {url, thread, at} | null}` message the bridge sends after `ready`.
+`http://127.0.0.1:19989/status`. The probe names the extension's ID in `x-extension-id`, as a
+paired extension's `Origin` does, and the bridge records the last known ID it saw in
+`~/.amp-browser-bridge/extension-id`. Pairing opens the setup page under that ID, so it reaches the
+build you installed: unpacked or, once listed, the Chrome Web Store's. The setup page learns about
+publishing from a `{type: "published", published: {url, thread, at} | null}` message the bridge
+sends after `ready`.
 Opened as `setup.html#code=<code>`, it pairs with that code and drops it from the address bar.
 
 The plugin can't be installed with `amp plugins import` or `amp plugins add` yet, because they
@@ -264,18 +268,23 @@ After changing `extension/`, click **Reload** on its card in `chrome://extension
 
 ```sh
 bun run release            # dist/amp-browser-bridge-<version>.zip, keeps the fixed ID
-bun run release --no-key   # without the manifest key, for a first Chrome Web Store upload
+bun run release --no-key   # without the manifest key, for Chrome Web Store uploads
 ```
 
 The version comes from `extension/manifest.json`; bump it before each release. The zip is the
 `extension/` folder as is, and the same sources always give the same bytes. Unzip it and use
 **Load unpacked** to try it.
 
-The fixed ID comes from the `key` in `extension/manifest.json` and is exported as `EXTENSION_ID`
-from `plugin/extension-id.ts`; a test fails if they disagree. The extension is not in the Chrome
-Web Store. A store listing would get a store-assigned ID, so both would change together.
-[`docs/chrome-web-store.md`](docs/chrome-web-store.md) drafts the listing, permission
-justifications and screenshots, and [`docs/privacy.md`](docs/privacy.md) the privacy policy.
+The unpacked build's fixed ID comes from the `key` in `extension/manifest.json` and is exported as
+`UNPACKED_ID` from `plugin/extension-id.ts`; a test fails if they disagree. The Chrome Web Store
+listing will have its own ID, `STORE_ID`, because the store keeps its own key; store uploads
+always use `--no-key`. The plugin works with both.
+
+The extension is not in the Chrome Web Store yet.
+[`docs/chrome-web-store.md`](docs/chrome-web-store.md) has the upload checklist, listing text,
+permission justifications and the plan for moving to the store's ID;
+[`docs/privacy.md`](docs/privacy.md) is the privacy policy. `CHROME=<Chromium binary> bun
+scripts/store-images.ts` renders the store screenshots and promo tile into `docs/store/`.
 
 ## License
 

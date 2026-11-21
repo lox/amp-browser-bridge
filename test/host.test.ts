@@ -3,12 +3,12 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import '../extension/pairing.js'
-import { EXTENSION_ID } from '../plugin/extension-id'
-import { LEASE_IDLE_MS, signRequest, startBridge, verifyResponse, writePublished } from '../plugin/host'
+import { EXTENSION_IDS, UNPACKED_ID } from '../plugin/extension-id'
+import { LEASE_IDLE_MS, setupPageID, signRequest, startBridge, verifyResponse, writePublished } from '../plugin/host'
 
 /** The extension's half of the handshake, as background.js loads it. */
 const P = (globalThis as any).BridgePairing
-const ORIGIN = `chrome-extension://${EXTENSION_ID}`
+const ORIGIN = `chrome-extension://${UNPACKED_ID}`
 
 const A = 'T-00000000-0000-0000-0000-00000000000a'
 const B = 'T-00000000-0000-0000-0000-00000000000b'
@@ -415,4 +415,21 @@ test("an agent-tab handoff can't skip the lease with a bad tab id, and only its 
   const id = (await call(B, 'handoff', { message: 'x', tab: 8 })).result.handoff_id
   expect((await api(`/handoff/${id}?wait=0`, A)).status).toBe(409)
   expect((await (await api(`/handoff/${id}?wait=0`, B)).json()).result).toEqual({ waiting: true })
+})
+
+test('remembers which known extension build reached it, for the setup page', async () => {
+  const { base, dir } = bridge()
+  const seen = () => (existsSync(join(dir, 'extension-id')) ? readFileSync(join(dir, 'extension-id'), 'utf8').trim() : '')
+  // An unknown ID, forged or from a fork, never decides where pairing codes go.
+  await fetch(base + '/status', { headers: { 'x-extension-id': 'abcdefghijklmnopabcdefghijklmnop' } })
+  expect((await fetch(base + '/ext', { headers: { origin: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop' } })).status).toBe(403)
+  expect(seen()).toBe('')
+  expect(setupPageID(dir)).toBe(EXTENSION_IDS[0])
+
+  // An unpaired extension probes /status; a paired one opens /ext.
+  await fetch(base + '/status', { headers: { 'x-extension-id': UNPACKED_ID } })
+  expect(seen()).toBe(UNPACKED_ID)
+  expect(setupPageID(dir)).toBe(UNPACKED_ID)
+  writeFileSync(join(dir, 'extension-id'), 'not-an-id\n')
+  expect(setupPageID(dir)).toBe(EXTENSION_IDS[0])
 })

@@ -2,7 +2,7 @@
 // unpacked or upload to the Chrome Web Store.
 //
 //   bun run release            # keeps the manifest key, so the ID stays fixed
-//   bun run release --no-key   # drops it, for the first Chrome Web Store upload
+//   bun run release --no-key   # drops it, for Chrome Web Store uploads (the store keeps its own key)
 //
 // The zip is written here rather than with `zip` so the build needs no extra
 // tools and the same sources always give the same bytes.

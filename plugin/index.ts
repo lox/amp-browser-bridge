@@ -2,8 +2,7 @@ import type { PluginAPI, PluginToolContext } from '@ampcode/plugin'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { EXTENSION_ID } from './extension-id'
-import { DEFAULT_PORT, readPublished, signRequest, startBridge, tokenFile, verifyResponse, writePublished, type Published } from './host'
+import { DEFAULT_PORT, readPublished, setupPageID, signRequest, startBridge, tokenFile, verifyResponse, writePublished, type Published } from './host'
 
 export const description = "Lets Amp threads, including orbs, use one Chrome tab you lend on your Mac. On the Mac it runs the bridge; elsewhere it reaches the bridge through a runner portal."
 
@@ -147,7 +146,7 @@ async function republish(log: (m: string) => void, stopped: () => boolean) {
 /** Opens the extension's setup page in Chrome on this Mac. The code stays in the URL fragment, on this Mac. */
 async function openSetupPage(code: string) {
   if (process.platform !== 'darwin') return false
-  const url = `chrome-extension://${EXTENSION_ID}/setup.html#code=${encodeURIComponent(code)}`
+  const url = `chrome-extension://${setupPageID(dir)}/setup.html#code=${encodeURIComponent(code)}`
   for (const args of [['-a', 'Google Chrome', url], [url]]) {
     if ((await Bun.spawn(['open', ...args], { stdout: 'ignore', stderr: 'ignore' }).exited) === 0) return true
   }
