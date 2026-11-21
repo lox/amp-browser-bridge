@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { EXTENSION_ID } from './extension-id'
-import { DEFAULT_PORT, readPublished, startBridge, tokenFile, writePublished, type Published } from './host'
+import { DEFAULT_PORT, readPublished, signRequest, startBridge, tokenFile, verifyResponse, writePublished, type Published } from './host'
 
 export const description = "Lets Amp threads, including orbs, use one Chrome tab you lend on your Mac. On the Mac it runs the bridge; elsewhere it reaches the bridge through a runner portal."
 
@@ -41,15 +41,21 @@ async function portalLogin(base: string, signal?: AbortSignal) {
  */
 async function request(target: Target, thread: string, path: string, init: RequestInit & { signal?: AbortSignal } = {}): Promise<any> {
   const command = path === '/call'
+  const method = init.method ?? 'GET'
+  const body = typeof init.body === 'string' ? init.body : ''
   for (let attempt = 0; attempt < 2; attempt++) {
     if (target.portal && !portalCookie) await portalLogin(target.base, init.signal)
+    // The token never goes over the wire: whatever holds the bridge's port sees only a single-use signature.
+    const auth = signRequest(target.token, { method, path, thread, body })
     let res: Response
+    let text: string
     try {
       res = await fetch(target.base + path, {
         ...init,
         redirect: 'manual',
-        headers: { ...(init.headers ?? {}), ...(target.portal ? { cookie: portalCookie } : {}), 'x-bridge-token': target.token, 'x-amp-thread': thread, 'content-type': 'application/json' },
+        headers: { ...(init.headers ?? {}), ...(target.portal ? { cookie: portalCookie } : {}), 'x-bridge-auth': auth.header, 'x-amp-thread': thread, 'content-type': 'application/json' },
       })
+      text = await res.text()
     } catch (error: any) {
       // Even a cancelled call may already be running on the bridge.
       if (command) return { error: `The request to the bridge ${init.signal?.aborted ? 'was cancelled' : `failed (${error?.message ?? error})`}; the outcome is unknown.`, unknown: true }
@@ -59,9 +65,16 @@ async function request(target: Target, thread: string, path: string, init: Reque
     if (!command && target.portal && res.status >= 502 && res.status <= 504) {
       throw Object.assign(new Error(`The bridge portal is temporarily unavailable (HTTP ${res.status}).`), { transient: true })
     }
-    if ((res.headers.get('content-type') ?? '').includes('application/json')) return res.json()
-    const text = await res.text()
-    if (res.status === 401 && text === 'unauthorized') throw new Error('The bridge rejected BROWSER_BRIDGE_TOKEN. Publish the bridge again from a thread on the Mac.')
+    if ((res.headers.get('content-type') ?? '').includes('application/json')) {
+      if (verifyResponse(target.token, auth.nonce, res.status, text, res.headers.get('x-bridge-proof'))) return JSON.parse(text)
+      // A program other than the bridge holds its port, or the answer was changed on the way.
+      const why = "The answer did not come from your browser bridge (its signature is missing or wrong). Check that no other program holds the bridge's port on the Mac and that the plugin is the same version there and here."
+      if (command) return { error: `${why} The outcome is unknown.`, unknown: true }
+      throw new Error(why)
+    }
+    if (res.status === 401 && text === 'unauthorized') {
+      throw new Error("The bridge rejected this request's signature. Publish the bridge again from a thread on the Mac so BROWSER_BRIDGE_TOKEN is current, update the plugin if the Mac's is a different version, and check that both clocks are right.")
+    }
     if (target.portal && res.status >= 300 && res.status < 400 && attempt === 0) {
       // The portal wants a fresh sign-in; the request never reached the bridge.
       portalCookie = ''

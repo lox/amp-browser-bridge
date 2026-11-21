@@ -3,6 +3,8 @@
 // Everything that must survive a service worker restart lives in chrome.storage.session: the lent
 // tab and its permissions, each tab's latest snapshot refs, a waiting handoff and the lease. Amp's
 // own tabs are recorded in chrome.storage.local, so they stay Amp's across a reload of the extension.
+importScripts("pairing.js");
+
 const BRIDGE = "ws://127.0.0.1:19989/ext";
 const SNAPSHOT_LIMIT = 120_000;
 const MUTATING = new Set(["click", "type", "navigate"]);
@@ -112,13 +114,26 @@ function send(message) {
 
 async function connect(code) {
   clearTimeout(reconnectTimer);
-  const {key} = await chrome.storage.local.get("key");
+  // {version: 2, secret}: the browser key from the handshake in pairing.js. Never sent anywhere.
+  const stored = (await chrome.storage.local.get("key")).key;
+  if (typeof stored === "string") {
+    // Earlier versions sent their key in plain text on every connection, to whatever held the port.
+    await chrome.storage.local.remove("key");
+    pairError = "The extension was updated and now pairs in a safer way, so this browser needs to pair once more.";
+    chrome.tabs.create({url: chrome.runtime.getURL("setup.html")});
+  }
+  const key = stored?.version === 2 ? stored.secret : "";
   if (code) {
     pendingCode = code;
     pairError = "";
   }
   code = pendingCode || undefined;
   if (!key && !code) return;
+  // A code takes precedence: the user asked to pair. The proofs are bound to the port dialled.
+  // Awaited before the old socket is replaced, so overlapping calls never leave one open.
+  const port = Number(new URL(BRIDGE).port);
+  const nonce = BridgePairing.nonce();
+  const exchange = code ? await BridgePairing.codeExchange(code) : null;
   if (socket) {
     socket.onclose = null;
     socket.close();
@@ -127,12 +142,49 @@ async function connect(code) {
   published = undefined;
   const ws = new WebSocket(BRIDGE);
   socket = ws;
-  ws.onopen = async () => ws.send(JSON.stringify({type: "hello", key, code, tab: await tabInfo(), agent_tabs: await agentTabsInfo(), handoff: (await session.get("handoff"))?.id}));
-  ws.onmessage = async (event) => {
-    const message = JSON.parse(event.data);
-    if (message.type === "paired") await chrome.storage.local.set({key: message.key});
-    if (message.type === "published") published = message.published ?? null;
-    if (message.type === "ready") {
+  // Anything can listen on the port, so nothing it sends is obeyed until it has proved it holds this
+  // browser's key or knows the code. `phase` is what may come next; "busy" while a step is checked.
+  let phase = "challenge";
+  let bridgeNonce = "";
+  let sessionKey = null;
+  let distrusted = "";
+  const IMPOSTOR = "Something on 127.0.0.1:19989 could not prove it is your bridge, so this browser won't talk to it. Quit whatever holds the port, then restart Amp.";
+  const refuse = (why) => {
+    distrusted = why;
+    ws.close();
+  };
+  const handshakeTimer = setTimeout(() => phase !== "ready" && refuse(IMPOSTOR), 10_000);
+  const authenticate = async (browserKey) => {
+    const proof = await BridgePairing.keyProof(browserKey, "extension", port, nonce, bridgeNonce);
+    phase = "ready-wait";
+    // The lent tab is told only to a bridge that has proved itself.
+    ws.send(JSON.stringify({type: "auth", proof, tab: await tabInfo(), agent_tabs: await agentTabsInfo(), handoff: (await session.get("handoff"))?.id}));
+  };
+  const handshake = async (message) => {
+    const step = phase;
+    phase = "busy";
+    if (step === "challenge" && message.type === "challenge" && typeof message.nonce === "string") {
+      bridgeNonce = message.nonce;
+      if (!exchange) {
+        if (!BridgePairing.same(await BridgePairing.keyProof(key, "bridge", port, nonce, bridgeNonce), message.proof)) return refuse(IMPOSTOR);
+        return authenticate(key);
+      }
+      sessionKey = await exchange.session(port, nonce, bridgeNonce, message.ecdh);
+      if (!sessionKey) return refuse(IMPOSTOR);
+      const proof = await BridgePairing.codeProof(sessionKey, "extension");
+      phase = "paired";
+      return ws.send(JSON.stringify({type: "pair", proof}));
+    }
+    if (step === "paired" && message.type === "paired") {
+      if (!BridgePairing.same(await BridgePairing.codeProof(sessionKey, "bridge"), message.proof)) return refuse(IMPOSTOR);
+      const secret = await BridgePairing.unwrapKey(sessionKey, message.wrapped);
+      if (!secret) return refuse(IMPOSTOR);
+      await chrome.storage.local.set({key: {version: 2, secret}});
+      return authenticate(secret);
+    }
+    if (step === "ready-wait" && message.type === "ready") {
+      phase = "ready";
+      clearTimeout(handshakeTimer);
       ready = true;
       lastError = "";
       pendingCode = "";
@@ -140,21 +192,45 @@ async function connect(code) {
       heartbeat = setInterval(() => send({type: "ping"}), 20_000);
       // A Continue click made while the bridge was unreachable is delivered now.
       if ((await session.get("handoff"))?.continued) await continueHandoff();
+      return;
     }
+    refuse(IMPOSTOR);
+  };
+  ws.onopen = () => ws.send(JSON.stringify({type: "hello", nonce, ...(exchange ? {ecdh: exchange.publicKey} : {})}));
+  ws.onmessage = async (event) => {
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch {
+      return refuse(IMPOSTOR);
+    }
+    if (phase !== "ready") return handshake(message);
+    if (message.type === "published") published = message.published ?? null;
     if (message.type === "lease") await session.set("lease", message.lease);
     if (message.type === "command") run(message);
     if (message.type === "handoff") await startHandoff(message.id, message.message, message.thread, message.tab);
     if (message.type === "cancel_handoff") await clearHandoff(message.id);
   };
   ws.onclose = (event) => {
+    clearTimeout(handshakeTimer);
     if (socket !== ws) return;
     socket = null;
     ready = false;
     clearInterval(heartbeat);
+    if (distrusted) {
+      // The code may have reached an impostor; ask for a new one rather than trying it again.
+      if (code) {
+        pendingCode = "";
+        pairError = distrusted;
+      }
+      lastError = distrusted;
+      reconnectTimer = setTimeout(() => connect(), 10_000);
+      return;
+    }
     if (event.code === 1008) {
       pairError = code
         ? "The bridge rejected this pairing code. Codes work once, for 10 minutes, and five wrong tries void them."
-        : "The bridge no longer knows this browser. Pair it again.";
+        : "The bridge no longer knows this browser. Pair it again. If you just updated the extension, update the Amp plugin on your Mac too.";
       pendingCode = "";
       lastError = "The bridge rejected this browser. Pair it again.";
       chrome.storage.local.remove("key");
