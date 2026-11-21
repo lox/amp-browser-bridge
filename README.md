@@ -39,11 +39,16 @@ plugin, an extension, and the Amp app on your Mac.
    (or reload plugins) to pick it up.
 
 2. **Load the extension.** Open `chrome://extensions`, turn on **Developer mode**, choose **Load
-   unpacked**, and pick this repository's `extension/` folder.
+   unpacked**, and pick this repository's `extension/` folder. Chrome opens the extension's setup
+   page: a checklist that follows the next steps live (bridge found, paired, published to orbs, tab
+   lent) and says what to do at each one that fails. Open it again from the popup's **Setup and
+   status** link.
 
-3. **Pair it.** Run `cat ~/.amp-browser-bridge/pairing-code` and enter the code in the extension's
-   popup. A code works once, for 10 minutes. If it expires, ask Amp in a thread on your Mac for a
-   new pairing code (the `browser_bridge_pair` tool writes a fresh one to the same file).
+3. **Pair it.** Run `cat ~/.amp-browser-bridge/pairing-code` and enter the code on the setup page.
+   A code works once, for 10 minutes. If it expires, ask Amp in a thread on your Mac for a new
+   pairing code (the `browser_bridge_pair` tool writes a fresh one to the same file). Opening
+   `chrome-extension://<extension ID>/setup.html#code=<code>` pairs without typing; the page drops
+   the code from the address bar.
 
 4. **Publish the bridge to your orbs.** In an Amp thread on your Mac, ask *"publish the browser
    bridge"*. After you confirm, the `browser_bridge_publish` tool:
@@ -53,6 +58,8 @@ plugin, an extension, and the Amp app on your Mac.
 
    Keep that thread unarchived: the portal belongs to it. If you archive it, publish again from
    another thread on the Mac. Orbs that were already running need `amp orb restart-processes`.
+   The setup page ticks this step when the bridge reports it is published; a bridge that doesn't
+   report it shows the step as unknown.
 
 ## Use it
 
@@ -127,6 +134,10 @@ change the port (the extension expects 19989).
 The extension (`extension/`) attaches Chrome's debugger to the lent tab only. Its state lives in
 session storage, so a service worker restart keeps the lend, the snapshot refs and a waiting
 handoff. You can also run the bridge without Amp: `bun plugin/host.ts`.
+
+The setup page (`extension/setup.html`) finds the bridge by its `401` answer on
+`http://127.0.0.1:19989/status`, and learns about publishing from a
+`{type: "published", published: {url, thread, at} | null}` message the bridge sends after `ready`.
 
 ## Develop
 
