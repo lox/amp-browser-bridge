@@ -1,5 +1,6 @@
 // The extension's half of the handshake with the bridge (plugin/host.ts has the bridge's half; keep
-// the formats in step). Loaded by background.js with importScripts, and by test/host.test.ts.
+// the formats in step). It sets globalThis.BridgePairing and exports nothing, so it loads either as
+// a module (background.js imports it) or as a classic script; test/host.test.ts imports it too.
 //
 // A one-time pairing code is exchanged, over a fresh ECDH key agreement, for a random key of this
 // browser's own, so neither the code nor the key ever crosses the connection. On every connection

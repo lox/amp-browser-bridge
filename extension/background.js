@@ -3,8 +3,6 @@
 // Everything that must survive a service worker restart lives in chrome.storage.session: the lent
 // tab and its permissions, each tab's latest snapshot refs, a waiting handoff and the lease. Amp's
 // own tabs are recorded in chrome.storage.local, so they stay Amp's across a reload of the extension.
-importScripts("pairing.js");
-
 const BRIDGE = "ws://127.0.0.1:19989/ext";
 const SNAPSHOT_LIMIT = 120_000;
 const MUTATING = new Set(["click", "type", "navigate"]);
@@ -111,6 +109,10 @@ function send(message) {
   socket.send(JSON.stringify(message));
   return true;
 }
+
+// Defines globalThis.BridgePairing. Imports are hoisted, so this placement only keeps it next to
+// its one user; pairing.js has no exports, so it also loads as a classic script (the tests do).
+import "./pairing.js";
 
 async function connect(code) {
   clearTimeout(reconnectTimer);
