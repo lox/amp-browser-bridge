@@ -203,3 +203,7 @@ from `plugin/extension-id.ts`; a test fails if they disagree. The extension is n
 Web Store. A store listing would get a store-assigned ID, so both would change together.
 [`docs/chrome-web-store.md`](docs/chrome-web-store.md) drafts the listing, permission
 justifications and screenshots, and [`docs/privacy.md`](docs/privacy.md) the privacy policy.
+
+## License
+
+[MIT](LICENSE)
