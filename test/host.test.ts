@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { LEASE_IDLE_MS, startBridge } from '../plugin/host'
+import { LEASE_IDLE_MS, startBridge, writePublished } from '../plugin/host'
 
 const A = 'T-00000000-0000-0000-0000-00000000000a'
 const B = 'T-00000000-0000-0000-0000-00000000000b'
@@ -43,8 +43,8 @@ function extension(base: string, hello: object, answer = true) {
   return { ws, messages, closed, ready, send: (m: object) => ws.send(JSON.stringify(m)) }
 }
 
-const until = async (check: () => boolean) => {
-  for (let i = 0; i < 100 && !check(); i++) await Bun.sleep(10)
+const until = async (check: () => boolean, ms = 1000) => {
+  for (let i = 0; i < ms / 10 && !check(); i++) await Bun.sleep(10)
 }
 
 test('rejects requests without the token or the extension origin', async () => {
@@ -192,4 +192,25 @@ test('a card the bridge is not waiting for is cancelled on reconnect', async () 
   await again.ready
   await until(() => again.messages.some((m) => m.type === 'cancel_handoff'))
   expect(again.messages.find((m) => m.type === 'cancel_handoff')).toEqual({ type: 'cancel_handoff', id: '0123456789abcdef' })
+})
+
+test('tells the extension where the bridge is published, and when that changes', async () => {
+  const { b, base, dir, api, code } = bridge()
+  const ext = extension(base, { type: 'hello', code: code() })
+  await ext.ready
+  const last = () => ext.messages.filter((m) => m.type === 'published').at(-1)
+  await until(() => !!last())
+  expect(last()).toEqual({ type: 'published', published: null })
+
+  // Another Amp process on the Mac publishes; the bridge notices the file.
+  const p = { url: 'https://port-19989--abc.onamp.dev', thread: A, at: '2026-11-21T00:00:00.000Z' }
+  writePublished(dir, p)
+  await until(() => last()?.published !== null, 3000)
+  expect(last()).toEqual({ type: 'published', published: p })
+  expect((await (await api('/status', null)).json()).published).toEqual(p)
+
+  writePublished(dir, null)
+  await until(() => last()?.published === null, 3000)
+  expect(last()).toEqual({ type: 'published', published: null })
+  expect(JSON.stringify(ext.messages)).not.toContain(b.token)
 })
