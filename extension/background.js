@@ -1,17 +1,22 @@
 // Lends one tab to Amp through the bridge on this computer (plugin/host.ts), which listens only on
-// loopback. Everything that must survive a service worker restart lives in chrome.storage.session:
-// the lent tab and its permissions, the latest snapshot's refs, a waiting handoff and the lease.
+// loopback, and, if the user allows it, lets Amp threads open background tabs of their own.
+// Everything that must survive a service worker restart lives in chrome.storage.session: the lent
+// tab and its permissions, each tab's latest snapshot refs, a waiting handoff and the lease. Amp's
+// own tabs are recorded in chrome.storage.local, so they stay Amp's across a reload of the extension.
 const BRIDGE = "ws://127.0.0.1:19989/ext";
 const SNAPSHOT_LIMIT = 120_000;
 const MUTATING = new Set(["click", "type", "navigate"]);
 const EDITABLE = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
+/** Amp's own tabs close after this long without a command. */
+const AGENT_TAB_IDLE_MS = 10 * 60_000;
 
 let socket = null;
 let ready = false;
 let heartbeat = null;
 let reconnectTimer = null;
 let lastError = "";
-let running = 0;
+/** Commands running per tab, for the RUN badge and so an idle sweep never closes a busy tab. */
+const running = new Map();
 // A pairing code is kept until the bridge accepts or rejects it, so a bridge that is still starting
 // doesn't lose it. pairError says why the last code failed.
 let pendingCode = "";
@@ -29,6 +34,22 @@ const session = {
 /** {tabId, origin, allowActions, anyOrigin} */
 const getLend = () => session.get("lend");
 
+/** Amp's own tabs: {[tabId]: {thread, lastUsed, groupId}}. Only the thread that opened a tab may use it. */
+const getAgentTabs = async () => (await chrome.storage.local.get("agentTabs")).agentTabs ?? {};
+let agentTabsLock = Promise.resolve();
+/** Read-modify-write of the record, one at a time, so concurrent commands don't lose each other's changes. */
+function updateAgentTabs(change) {
+  const next = agentTabsLock.then(async () => {
+    const tabs = await getAgentTabs();
+    const result = change(tabs);
+    await chrome.storage.local.set({agentTabs: tabs});
+    return result;
+  });
+  agentTabsLock = next.catch(() => {});
+  return next;
+}
+const agentTabsAllowed = async () => !!(await chrome.storage.local.get("allowAgentTabs")).allowAgentTabs;
+
 async function tabInfo() {
   const lend = await getLend();
   if (!lend) return null;
@@ -36,15 +57,50 @@ async function tabInfo() {
   return tab ? {title: tab.title || "", url: tab.url || "", origin: lend.origin, allow_actions: lend.allowActions, any_origin: lend.anyOrigin} : null;
 }
 
+/**
+ * The tab behind a record, if it is still Amp's: open and in the green Amp group it was put in.
+ * A record can outlive its tab (tab IDs start over when Chrome restarts), and a tab you drag out of
+ * the group is yours again, so anything else is forgotten, never used or closed.
+ */
+async function ownedTab(tabId, record) {
+  const tab = await chrome.tabs.get(Number(tabId)).catch(() => null);
+  const group = tab && record.groupId >= 0 && tab.groupId === record.groupId ? await chrome.tabGroups.get(tab.groupId).catch(() => null) : null;
+  if (group?.title === GROUP_TITLE && group.color === "green") return tab;
+  const stale = await updateAgentTabs((tabs) => tabs[tabId]?.groupId === record.groupId);
+  if (stale) await forgetAgentTab(Number(tabId));
+  return null;
+}
+
+async function agentTabsInfo() {
+  const tabs = [];
+  for (const [id, record] of Object.entries(await getAgentTabs())) {
+    const tab = await ownedTab(id, record);
+    if (tab) tabs.push({tab: tab.id, thread: record.thread, title: tab.title || "", url: tab.url || ""});
+  }
+  return {enabled: await agentTabsAllowed(), tabs};
+}
+
+async function sendAgentTabs() {
+  send({type: "agent_tabs", ...(await agentTabsInfo())});
+}
+
 async function badge() {
-  const [lend, handoff] = await Promise.all([getLend(), session.get("handoff")]);
-  if (!lend) return;
-  // Per tab: the badge shows only while you look at the lent tab, so ON never marks the wrong one.
-  const tabId = lend.tabId;
-  await chrome.action.setBadgeText({tabId, text: handoff ? "WAIT" : running ? "RUN" : "ON"});
-  // The icon's orange asks for you, the setup page's blue is busy, the icon's navy is lent and idle.
-  await chrome.action.setBadgeBackgroundColor({tabId, color: handoff ? "#ea580c" : running ? "#1d4ed8" : "#111827"});
-  await chrome.action.setBadgeTextColor({tabId, color: "#ffffff"});
+  const [lend, handoff, agentTabs] = await Promise.all([getLend(), session.get("handoff"), getAgentTabs()]);
+  // Per tab: the badge shows only while you look at a tab Amp uses, so ON never marks the wrong one.
+  const ids = Object.keys(agentTabs).map(Number);
+  if (lend) ids.push(lend.tabId);
+  // A handoff in one of Amp's background tabs: you aren't looking at it, so every tab shows WAIT.
+  const away = !!handoff && handoff.tabId !== lend?.tabId;
+  for (const tabId of ids) {
+    const waiting = handoff?.tabId === tabId || away;
+    const busy = running.get(tabId) > 0;
+    await chrome.action.setBadgeText({tabId, text: waiting ? "WAIT" : busy ? "RUN" : "ON"}).catch(() => {});
+    // The icon's orange asks for you, the setup page's blue is busy, the icon's navy is in use and idle.
+    await chrome.action.setBadgeBackgroundColor({tabId, color: waiting ? "#ea580c" : busy ? "#1d4ed8" : "#111827"}).catch(() => {});
+    await chrome.action.setBadgeTextColor({tabId, color: "#ffffff"}).catch(() => {});
+  }
+  await chrome.action.setBadgeText({text: away ? "WAIT" : ""});
+  if (away) await chrome.action.setBadgeBackgroundColor({color: "#ea580c"});
 }
 
 function send(message) {
@@ -71,7 +127,7 @@ async function connect(code) {
   published = undefined;
   const ws = new WebSocket(BRIDGE);
   socket = ws;
-  ws.onopen = async () => ws.send(JSON.stringify({type: "hello", key, code, tab: await tabInfo(), handoff: (await session.get("handoff"))?.id}));
+  ws.onopen = async () => ws.send(JSON.stringify({type: "hello", key, code, tab: await tabInfo(), agent_tabs: await agentTabsInfo(), handoff: (await session.get("handoff"))?.id}));
   ws.onmessage = async (event) => {
     const message = JSON.parse(event.data);
     if (message.type === "paired") await chrome.storage.local.set({key: message.key});
@@ -87,7 +143,7 @@ async function connect(code) {
     }
     if (message.type === "lease") await session.set("lease", message.lease);
     if (message.type === "command") run(message);
-    if (message.type === "handoff") await startHandoff(message.id, message.message);
+    if (message.type === "handoff") await startHandoff(message.id, message.message, message.thread, message.tab);
     if (message.type === "cancel_handoff") await clearHandoff(message.id);
   };
   ws.onclose = (event) => {
@@ -114,21 +170,66 @@ async function connect(code) {
 }
 
 async function run(message) {
-  running++;
-  await badge();
+  const args = message.args || {};
   // Set once input may have reached the page: a failure after that leaves the outcome unknown.
   const effects = {sent: false};
+  let tabId = null;
   try {
-    const lend = await getLend();
-    if (!lend) throw new Error("No tab is lent. Ask the user to open the page and click Lend this tab in the extension.");
-    const result = await execute(lend, message.tool, message.args || {}, effects);
+    if (message.tool === "open_tab") {
+      send({type: "result", id: message.id, result: await openTab(message.thread, args.url, effects)});
+      return;
+    }
+    const policy = await policyFor(message.thread, args.tab, true);
+    tabId = policy.tabId;
+    // A reload of the extension detaches the debugger; attach again on first use.
+    if (policy.agent) await attach(tabId);
+    await badge();
+    if (message.tool === "close_tab" && (await session.get("handoff"))?.tabId === tabId) throw new Error("The user has the tab for a handoff. Wait for browser_handoff to return.");
+    const result = message.tool === "close_tab" && policy.agent
+      ? await closeAgentTab(tabId)
+      : await execute(policy, message.tool, args, effects);
     send({type: "result", id: message.id, result});
   } catch (error) {
     send({type: "result", id: message.id, error: String(error?.message || error).slice(0, 1000), unknown: effects.sent});
   } finally {
-    running--;
-    await badge();
+    if (tabId != null) {
+      // A tab the user closed, or turned Amp's tabs off for, while this ran closes now.
+      const close = await updateAgentTabs((tabs) => {
+        running.set(tabId, running.get(tabId) - 1);
+        if (tabs[tabId]) tabs[tabId].lastUsed = Date.now();
+        return !!tabs[tabId]?.closing && !(running.get(tabId) > 0);
+      });
+      if (close) await closeAgentTab(tabId).catch(() => {});
+      await badge();
+    }
   }
+}
+
+/**
+ * What a command may do to its tab: the lent tab (no `tab` argument) with the user's permissions,
+ * or one of Amp's own tabs, which only the thread that opened it may use. The user widened those
+ * by letting Amp open tabs at all; the plugin still asks before each action or once per site.
+ */
+async function policyFor(thread, tab, count = false) {
+  if (tab == null) {
+    const lend = await getLend();
+    if (!lend) throw new Error("No tab is lent. Ask the user to open the page and click Lend this tab in the extension, or open a tab of your own with browser_open_tab.");
+    if (count) running.set(lend.tabId, (running.get(lend.tabId) || 0) + 1);
+    return lend;
+  }
+  const record = Number.isInteger(tab) ? (await getAgentTabs())[tab] : null;
+  if (!record || !await agentTabsAllowed() || !await ownedTab(tab, record)) throw new Error(`Tab ${tab} is not one of Amp's open tabs. Open one with browser_open_tab.`);
+  if (record.thread !== thread) throw new Error(`Tab ${tab} belongs to another thread. Open your own with browser_open_tab.`);
+  const tabId = tab;
+  // Under the same lock as closing, so a tab is never claimed for closing as a command starts on it.
+  const usable = await updateAgentTabs((tabs) => {
+    if (!tabs[tabId] || tabs[tabId].closing) return false;
+    tabs[tabId].lastUsed = Date.now();
+    if (count) running.set(tabId, (running.get(tabId) || 0) + 1);
+    return true;
+  });
+  if (!usable) throw new Error(`Tab ${tab} is closing. Open another with browser_open_tab.`);
+  return {tabId, allowActions: true, anyOrigin: true, agent: true};
 }
 
 async function execute(lend, tool, args, effects) {
@@ -138,18 +239,18 @@ async function execute(lend, tool, args, effects) {
   }
   // During a handoff the tab belongs to the user: no reading (they may be typing a 2FA code) and
   // no input, which could also land on the card's Continue button as a trusted click.
-  if (await session.get("handoff")) throw new Error("The user has the tab for a handoff. Wait for browser_handoff to return, or call it again if it failed; browser_status shows whether the user continued.");
+  if ((await session.get("handoff"))?.tabId === lend.tabId) throw new Error("The user has the tab for a handoff. Wait for browser_handoff to return, or call it again if it failed; browser_status shows whether the user continued.");
   const tab = await chrome.tabs.get(lend.tabId);
   if (!lend.anyOrigin && originOf(tab.url) !== lend.origin) {
     throw new Error(`The tab has left ${lend.origin}, the site it was lent on. Ask the user to go back or to allow other sites.`);
   }
   switch (tool) {
-    case "snapshot": return snapshot(target, tab);
-    case "describe": return describe(target, tab, args.ref);
-    case "screenshot": return screenshot(target);
+    case "snapshot": return snapshot(target, lend, tab);
+    case "describe": return describe(target, lend, tab, args.ref);
+    case "screenshot": return screenshot(target, lend);
     case "scroll": return scroll(target, Number(args.delta_y), effects);
-    case "click": return click(target, args.ref, effects);
-    case "type": return type(target, args.ref, String(args.text ?? ""), args.submit === true, effects);
+    case "click": return click(target, lend, args.ref, effects);
+    case "type": return type(target, lend, args.ref, String(args.text ?? ""), args.submit === true, effects);
     case "navigate": return navigate(target, lend, args.url, effects);
     default: throw new Error(`Unknown tool: ${tool}`);
   }
@@ -166,10 +267,9 @@ function originOf(url) {
 const cdp = (target, method, params = {}) => chrome.debugger.sendCommand(target, method, params);
 
 /** The current document's ID, refusing if the tab has left the lent site. */
-async function documentID(target) {
+async function documentID(target, lend) {
   const {frameTree} = await cdp(target, "Page.getFrameTree");
-  const lend = await getLend();
-  if (lend && !lend.anyOrigin && originOf(frameTree.frame.url) !== lend.origin) {
+  if (!lend.anyOrigin && originOf(frameTree.frame.url) !== lend.origin) {
     throw new Error(`The tab has left ${lend.origin}, the site it was lent on. Ask the user to go back or to allow other sites.`);
   }
   return frameTree.frame.loaderId;
@@ -178,8 +278,8 @@ async function documentID(target) {
 const SKIP = new Set(["none", "generic", "InlineTextBox", "LineBreak"]);
 const INTERACTIVE = new Set(["button", "link", "textbox", "searchbox", "combobox", "checkbox", "radio", "switch", "menuitem", "tab", "option", "slider", "spinbutton", "listbox", "menuitemcheckbox", "menuitemradio", "treeitem"]);
 
-async function snapshot(target, tab) {
-  const doc = await documentID(target);
+async function snapshot(target, lend, tab) {
+  const doc = await documentID(target, lend);
   const {nodes} = await cdp(target, "Accessibility.getFullAXTree");
   const byID = new Map(nodes.map((n) => [n.nodeId, n]));
   const refs = {};
@@ -221,18 +321,18 @@ async function snapshot(target, tab) {
   const root = nodes.find((n) => !n.parentId);
   if (root) walk(root, 0);
   // The origin was checked before the read; a navigation during it would mix in another page.
-  if (await documentID(target) !== doc) throw new Error("The page navigated while it was read. Take a new snapshot.");
-  await session.set("refs", {doc, refs});
+  if (await documentID(target, lend) !== doc) throw new Error("The page navigated while it was read. Take a new snapshot.");
+  await session.set(`refs:${target.tabId}`, {doc, refs});
   return {title: tab.title, url: tab.url, truncated, outline: lines.join("\n")};
 }
 
 // Refs come from the latest snapshot. Refuse to act once the page has navigated or the element no
 // longer matches, so an action approved for one element never lands on another.
-async function resolveRef(target, ref) {
-  const saved = await session.get("refs");
+async function resolveRef(target, lend, ref) {
+  const saved = await session.get(`refs:${target.tabId}`);
   const entry = saved?.refs[ref];
   if (!entry) throw new Error(`Unknown ref ${ref}. Take a new snapshot.`);
-  if (await documentID(target) !== saved.doc) throw new Error("The page changed since the snapshot. Take a new snapshot.");
+  if (await documentID(target, lend) !== saved.doc) throw new Error("The page changed since the snapshot. Take a new snapshot.");
   const {nodes} = await cdp(target, "Accessibility.getPartialAXTree", {backendNodeId: entry.backendNodeId, fetchRelatives: false});
   const node = nodes?.find((n) => n.backendDOMNodeId === entry.backendNodeId);
   if (!node || node.role?.value !== entry.role || (node.name?.value || "") !== entry.name) {
@@ -252,13 +352,13 @@ async function isolated(target, backendNodeId, fn, otherBackendNodeId) {
   return result.value;
 }
 
-async function describe(target, tab, ref) {
-  const entry = await resolveRef(target, ref);
+async function describe(target, lend, tab, ref) {
+  const entry = await resolveRef(target, lend, ref);
   return {ref, role: entry.role, name: entry.name, url: tab.url};
 }
 
-async function click(target, ref, effects) {
-  const {backendNodeId} = await resolveRef(target, ref);
+async function click(target, lend, ref, effects) {
+  const {backendNodeId} = await resolveRef(target, lend, ref);
   await cdp(target, "DOM.scrollIntoViewIfNeeded", {backendNodeId});
   const {model} = await cdp(target, "DOM.getBoxModel", {backendNodeId});
   const q = model.content;
@@ -280,8 +380,8 @@ async function click(target, ref, effects) {
   return {clicked: ref};
 }
 
-async function type(target, ref, text, submit, effects) {
-  const {backendNodeId} = await resolveRef(target, ref);
+async function type(target, lend, ref, text, submit, effects) {
+  const {backendNodeId} = await resolveRef(target, lend, ref);
   await cdp(target, "DOM.scrollIntoViewIfNeeded", {backendNodeId});
   // Focus and select in an isolated world, without bringing the tab to the front, and check that
   // the field really has focus: the page can't redirect it there, but its own handlers could.
@@ -332,10 +432,10 @@ async function scroll(target, dy, effects) {
   return {scrolled: dy};
 }
 
-async function screenshot(target) {
-  const doc = await documentID(target);
+async function screenshot(target, lend) {
+  const doc = await documentID(target, lend);
   const {data} = await cdp(target, "Page.captureScreenshot", {format: "jpeg", quality: 70});
-  if (await documentID(target) !== doc) throw new Error("The page navigated during the screenshot. Try again.");
+  if (await documentID(target, lend) !== doc) throw new Error("The page navigated during the screenshot. Try again.");
   return {mime_type: "image/jpeg", data};
 }
 
@@ -364,23 +464,27 @@ function showCard(message) {
 }
 
 async function injectCard() {
-  const [lend, handoff] = await Promise.all([getLend(), session.get("handoff")]);
-  if (!lend || !handoff || handoff.continued) return;
-  await chrome.scripting.executeScript({target: {tabId: lend.tabId}, world: "ISOLATED", func: showCard, args: [handoff.message]}).catch(() => {});
+  const handoff = await session.get("handoff");
+  if (!handoff || handoff.continued) return;
+  await chrome.scripting.executeScript({target: {tabId: handoff.tabId}, world: "ISOLATED", func: showCard, args: [handoff.message]}).catch(() => {});
 }
 
-async function removeCard() {
-  const lend = await getLend();
-  if (!lend) return;
-  await chrome.scripting.executeScript({target: {tabId: lend.tabId}, world: "ISOLATED", func: () => document.getElementById("__amp_handoff")?.remove()}).catch(() => {});
+async function removeCard(tabId) {
+  await chrome.scripting.executeScript({target: {tabId}, world: "ISOLATED", func: () => document.getElementById("__amp_handoff")?.remove()}).catch(() => {});
 }
 
-async function startHandoff(id, message) {
-  if (!await getLend()) {
-    send({type: "result", id, error: "No tab is lent, so there is nowhere to show the handoff."});
+/** Shows the card on the lent tab, or on one of the thread's own tabs, and opens its group so the user finds it. */
+async function startHandoff(id, message, thread, tab) {
+  let tabId;
+  try {
+    tabId = (await policyFor(thread, tab)).tabId;
+  } catch (error) {
+    send({type: "result", id, error: `Nowhere to show the handoff: ${error.message}`});
     return;
   }
-  await session.set("handoff", {id, message});
+  await session.set("handoff", {id, message, tabId});
+  const groupId = (await chrome.tabs.get(tabId).catch(() => null))?.groupId;
+  if (groupId >= 0) await chrome.tabGroups.update(groupId, {collapsed: false}).catch(() => {});
   await injectCard();
   await badge();
 }
@@ -389,14 +493,18 @@ async function clearHandoff(id) {
   const handoff = await session.get("handoff");
   if (!handoff || (id && handoff.id !== id)) return;
   await session.remove("handoff");
-  await removeCard();
+  await removeCard(handoff.tabId);
   await badge();
 }
 
 async function continueHandoff() {
   const handoff = await session.get("handoff");
   if (!handoff) return;
-  await removeCard();
+  // The user may have had the tab for longer than the idle limit; give the thread a fresh window.
+  await updateAgentTabs((tabs) => {
+    if (tabs[handoff.tabId]) tabs[handoff.tabId].lastUsed = Date.now();
+  });
+  await removeCard(handoff.tabId);
   // Keep the answer until the bridge has it; it's sent again once the connection is back.
   if (!send({type: "result", id: handoff.id, result: {continued: true, tab: await tabInfo()}})) {
     await session.set("handoff", {...handoff, continued: true});
@@ -410,8 +518,36 @@ async function continueHandoff() {
 async function lend(tabId) {
   const tab = await chrome.tabs.get(tabId);
   if (!/^https?:/.test(tab.url || "")) throw new Error("Chrome only lets extensions control normal web pages, not browser pages or the Web Store.");
+  const busy = "Amp is using this tab right now. Try again in a moment.";
+  if ((await getAgentTabs())[tabId] && running.get(tabId) > 0) throw new Error(busy);
   const previous = await getLend();
   if (previous && previous.tabId !== tabId) await stop();
+  // Lending one of Amp's own tabs makes it yours: it gets the lent tab's limits instead.
+  // Not while a command runs in it: that command was allowed more than a lent tab is.
+  const wasAgent = await updateAgentTabs((tabs) => {
+    if (tabs[tabId] && running.get(tabId) > 0) throw new Error(busy);
+    const had = !!tabs[tabId];
+    delete tabs[tabId];
+    return had;
+  });
+  await attach(tabId);
+  // Lent read-only and limited to the current site until the user widens it.
+  // Chrome deletes a group when its last tab leaves, so remember enough to recreate it, unless
+  // that was Amp's own group: then Stop lending leaves the tab ungrouped, as yours.
+  const previousGroup = tab.groupId >= 0 && !wasAgent ? await chrome.tabGroups.get(tab.groupId).catch(() => null) : null;
+  await session.set("lend", {
+    tabId, origin: originOf(tab.url), allowActions: false, anyOrigin: false,
+    previousGroup: previousGroup && {id: previousGroup.id, title: previousGroup.title, color: previousGroup.color, windowId: previousGroup.windowId},
+  });
+  await groupTab(tabId);
+  await session.remove(`refs:${tabId}`);
+  send({type: "tab", tab: await tabInfo()});
+  await sendAgentTabs();
+  await badge();
+}
+
+/** Attaches the debugger to a tab unless it already is, and turns on what snapshots need. */
+async function attach(tabId) {
   try {
     await chrome.debugger.attach({tabId}, "1.3");
   } catch (error) {
@@ -419,17 +555,6 @@ async function lend(tabId) {
   }
   await cdp({tabId}, "Page.enable");
   await cdp({tabId}, "Accessibility.enable");
-  // Lent read-only and limited to the current site until the user widens it.
-  // Chrome deletes a group when its last tab leaves, so remember enough to recreate it.
-  const previousGroup = tab.groupId >= 0 ? await chrome.tabGroups.get(tab.groupId).catch(() => null) : null;
-  await session.set("lend", {
-    tabId, origin: originOf(tab.url), allowActions: false, anyOrigin: false,
-    previousGroup: previousGroup && {id: previousGroup.id, title: previousGroup.title, color: previousGroup.color, windowId: previousGroup.windowId},
-  });
-  await groupTab(tabId);
-  await session.remove("refs");
-  send({type: "tab", tab: await tabInfo()});
-  await badge();
 }
 
 async function setPermissions(changes) {
@@ -475,11 +600,15 @@ async function ungroupTab(lend) {
 async function stop() {
   const current = await getLend();
   const handoff = await session.get("handoff");
-  if (handoff) send({type: "result", id: handoff.id, error: "The user stopped lending the tab."});
-  await removeCard();
-  await chrome.storage.session.remove(["lend", "refs", "handoff"]);
+  if (handoff && handoff.tabId === current?.tabId) {
+    send({type: "result", id: handoff.id, error: "The user stopped lending the tab."});
+    await removeCard(handoff.tabId);
+    await session.remove("handoff");
+  }
+  await session.remove("lend");
   if (current) {
-    await chrome.action.setBadgeText({tabId: current.tabId, text: ""}).catch(() => {});
+    await session.remove(`refs:${current.tabId}`);
+    await chrome.action.setBadgeText({tabId: current.tabId, text: null}).catch(() => {});
     await ungroupTab(current);
     await chrome.storage.local.remove("ampGroup");
     await chrome.debugger.detach({tabId: current.tabId}).catch(() => {});
@@ -488,23 +617,169 @@ async function stop() {
   await badge();
 }
 
-chrome.debugger.onDetach.addListener(async ({tabId}) => {
-  if (tabId === (await getLend())?.tabId) await stop();
+// ---- Amp's own tabs ----
+// With "Let Amp open its own tabs" on, a thread can open background tabs in the window you last
+// used, inside a collapsed green "Amp" group. Only that thread can use them, and they close after
+// AGENT_TAB_IDLE_MS without a command.
+
+async function openTab(thread, raw, effects) {
+  if (!await agentTabsAllowed()) throw new Error("The user hasn't let Amp open its own tabs. Ask them to turn on \"Let Amp open its own tabs\" in the extension popup, or to lend a tab.");
+  const url = new URL(raw);
+  if (!["http:", "https:"].includes(url.protocol)) throw new Error("Only HTTP(S) URLs.");
+  const win = await chrome.windows.getLastFocused({windowTypes: ["normal"]});
+  effects.sent = true;
+  const tab = await chrome.tabs.create({windowId: win.id, url: url.toString(), active: false});
+  // Join this window's group of Amp tabs if there is one; otherwise start one, collapsed.
+  const records = await getAgentTabs();
+  let groupId;
+  for (const record of Object.values(records)) {
+    const group = record.groupId >= 0 ? await chrome.tabGroups.get(record.groupId).catch(() => null) : null;
+    // A group the user renamed or recoloured is theirs now; start a new one rather than join it.
+    if (group?.windowId === win.id && group.title === GROUP_TITLE && group.color === "green") groupId = group.id;
+  }
+  try {
+    if (groupId != null) await chrome.tabs.group({tabIds: [tab.id], groupId});
+    else {
+      groupId = await chrome.tabs.group({tabIds: [tab.id], createProperties: {windowId: win.id}});
+      await chrome.tabGroups.update(groupId, {title: GROUP_TITLE, color: "green", collapsed: true});
+    }
+  } catch (error) {
+    // The group is what marks the tab as Amp's; without it, don't keep the tab.
+    await chrome.tabs.remove(tab.id).catch(() => {});
+    throw new Error(`Could not put the new tab in an Amp tab group: ${error.message}`);
+  }
+  await updateAgentTabs((tabs) => void (tabs[tab.id] = {thread, lastUsed: Date.now(), groupId}));
+  // The user may have turned the setting off while the tab opened.
+  if (!await agentTabsAllowed()) {
+    await closeAgentTab(tab.id);
+    throw new Error("The user turned off \"Let Amp open its own tabs\" while the tab opened.");
+  }
+  await attach(tab.id);
+  // Wait for the first load, so a snapshot right after sees the page.
+  for (let i = 0; i < 100; i++) {
+    const now = await chrome.tabs.get(tab.id).catch(() => null);
+    if (!now || now.status === "complete") break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const now = await chrome.tabs.get(tab.id);
+  await sendAgentTabs();
+  await badge();
+  return {tab: tab.id, url: now.url || url.toString(), title: now.title || ""};
+}
+
+/** Drops a tab from Amp's tabs without closing it. */
+async function forgetAgentTab(tabId) {
+  await updateAgentTabs((tabs) => void delete tabs[tabId]);
+  await session.remove(`refs:${tabId}`);
+  const handoff = await session.get("handoff");
+  if (handoff?.tabId === tabId) {
+    send({type: "result", id: handoff.id, error: "The tab was closed or taken back by the user."});
+    await session.remove("handoff");
+    await removeCard(tabId);
+  }
+  if (tabId !== (await getLend())?.tabId) await chrome.debugger.detach({tabId}).catch(() => {});
+  // null, not "": a per-tab "" would hide the WAIT every tab shows during a background handoff.
+  await chrome.action.setBadgeText({tabId, text: null}).catch(() => {});
+  await sendAgentTabs();
+  await badge();
+}
+
+async function closeAgentTab(tabId) {
+  tabId = Number(tabId);
+  const record = (await getAgentTabs())[tabId];
+  if (!record || !await ownedTab(tabId, record)) throw new Error(`Tab ${tabId} is not one of Amp's tabs.`);
+  // Removed straight after the ownership check, so a tab the user just dragged out isn't closed.
+  await chrome.tabs.remove(tabId).catch(() => {});
+  await forgetAgentTab(tabId);
+  return {closed: tabId};
+}
+
+/** Closes one of Amp's tabs now, or, if a command is running on it, as soon as that command ends. */
+async function closeWhenIdle(tabId) {
+  tabId = Number(tabId);
+  const now = await updateAgentTabs((tabs) => {
+    if (!tabs[tabId]) return false;
+    tabs[tabId].closing = true;
+    return !(running.get(tabId) > 0);
+  });
+  if (now) await closeAgentTab(tabId);
+}
+
+async function closeAllAgentTabs() {
+  for (const id of Object.keys(await getAgentTabs())) await closeWhenIdle(id).catch(() => {});
+}
+
+async function setAgentTabsAllowed(enabled) {
+  await chrome.storage.local.set({allowAgentTabs: enabled});
+  // Turning it off closes Amp's tabs, so nothing it opened keeps running in the background.
+  if (!enabled) await closeAllAgentTabs();
+  await sendAgentTabs();
+}
+
+/** The popup's Show button: the user asks to see one of Amp's tabs. */
+async function showTab(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  if (tab.groupId >= 0) await chrome.tabGroups.update(tab.groupId, {collapsed: false}).catch(() => {});
+  await chrome.tabs.update(tabId, {active: true});
+  await chrome.windows.update(tab.windowId, {focused: true});
+}
+
+/** Closes Amp's tabs that no command touched for AGENT_TAB_IDLE_MS, never one in use or waiting for the user. */
+async function closeIdleAgentTabs() {
+  for (const id of Object.keys(await getAgentTabs())) {
+    const tabId = Number(id);
+    const handoff = await session.get("handoff");
+    // Claimed under the record's lock: a command that starts after this sees the tab closing.
+    const claimed = await updateAgentTabs((tabs) => {
+      const record = tabs[tabId];
+      if (!record || record.closing || running.get(tabId) > 0 || handoff?.tabId === tabId || Date.now() - record.lastUsed < AGENT_TAB_IDLE_MS) return false;
+      record.closing = true;
+      return true;
+    });
+    if (claimed) await closeAgentTab(tabId).catch(() => {});
+  }
+}
+
+// Creating an alarm again restarts its timer, and the worker starts often; create it once.
+chrome.alarms.get("close-idle-agent-tabs").then((alarm) => alarm || chrome.alarms.create("close-idle-agent-tabs", {periodInMinutes: 1}));
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "close-idle-agent-tabs") closeIdleAgentTabs();
+});
+// Tab IDs start over when Chrome restarts, so a recorded ID could now be one of your tabs.
+chrome.runtime.onStartup.addListener(() => chrome.storage.local.remove("agentTabs"));
+
+chrome.debugger.onDetach.addListener(async ({tabId}, reason) => {
+  if (tabId === (await getLend())?.tabId) return stop();
+  // Cancel on Chrome's "started debugging" bar takes Amp's tabs back too; they stay open as yours.
+  if (reason === "canceled_by_user" && (await getAgentTabs())[tabId]) await forgetAgentTab(tabId);
+});
+// A renamed or recoloured Amp group is the user's, and so are its tabs.
+chrome.tabGroups.onUpdated.addListener(async (group) => {
+  for (const [id, record] of Object.entries(await getAgentTabs())) {
+    if (record.groupId === group.id) await ownedTab(id, record);
+  }
 });
 chrome.tabs.onRemoved.addListener(async (tabId) => {
-  if (tabId === (await getLend())?.tabId) await stop();
+  if (tabId === (await getLend())?.tabId) return stop();
+  if ((await getAgentTabs())[tabId]) await forgetAgentTab(tabId);
 });
 chrome.tabs.onUpdated.addListener(async (tabId, change) => {
-  if (tabId !== (await getLend())?.tabId) return;
-  if (change.status === "complete") await injectCard();
-  if (change.url || change.title) send({type: "tab", tab: await tabInfo()});
+  if (change.status === "complete" && tabId === (await session.get("handoff"))?.tabId) await injectCard();
+  // Dragged out of the Amp group: the tab is the user's at once, even mid-command.
+  if ("groupId" in change) {
+    const record = (await getAgentTabs())[tabId];
+    if (record) await ownedTab(tabId, record);
+  }
+  if (!change.url && !change.title) return;
+  if (tabId === (await getLend())?.tabId) send({type: "tab", tab: await tabInfo()});
+  else if ((await getAgentTabs())[tabId]) await sendAgentTabs();
 });
 
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   (async () => {
     if (message.action === "continue") {
-      // From the card on the lent tab, or the popup's Continue button.
-      if (!sender.tab || sender.tab.id === (await getLend())?.tabId) await continueHandoff();
+      // From the card on the tab that shows it, or the popup's Continue button.
+      if (!sender.tab || sender.tab.id === (await session.get("handoff"))?.tabId) await continueHandoff();
       return;
     }
     // Everything else comes only from the extension's own pages (the popup and setup.html), never
@@ -515,6 +790,10 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     if (message.action === "lend") return lend(message.tabId);
     if (message.action === "stop") return stop();
     if (message.action === "permissions") return setPermissions({allowActions: !!message.allowActions, anyOrigin: !!message.anyOrigin});
+    if (message.action === "agentTabs") return setAgentTabsAllowed(!!message.enabled);
+    if (message.action === "closeAgentTab") return closeWhenIdle(message.tabId);
+    if (message.action === "closeAgentTabs") return closeAllAgentTabs();
+    if (message.action === "showTab") return showTab(message.tabId);
     if (message.action === "release") {
       send({type: "release"});
       await session.remove("lease");
@@ -532,7 +811,8 @@ async function state() {
   return {
     paired: !!key, connected: ready, bridge: ready ? "connected" : await probe(), bridgeError: lastError,
     pairing: !!pendingCode, pairError, published,
-    lend: lendState, tab: await tabInfo(), waiting: handoff?.message ?? null, lease,
+    lend: lendState, tab: await tabInfo(), waiting: handoff?.message ?? null, waitingTab: handoff?.tabId ?? null, lease,
+    agentTabs: await agentTabsInfo(),
   };
 }
 

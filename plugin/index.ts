@@ -148,27 +148,36 @@ const allowed = new Set<string>()
 
 async function approve(target: Target, ctx: PluginToolContext, tool: string, input: Record<string, unknown>) {
   // Don't ask the user to approve something the extension will refuse anyway.
-  const { tab } = await request(target, ctx.thread.id, '/status', { signal: ctx.signal })
-  if (!tab) throw new Error('No tab is lent. Ask the user to open the page and click Lend this tab in the extension popup.')
-  if (!tab.allow_actions) throw new Error('This tab is lent read-only. Ask the user to turn on "Allow clicks, typing and navigation" in the extension popup.')
+  const { tab, agent_tabs } = await request(target, ctx.thread.id, '/status', { signal: ctx.signal })
+  const own = tool === 'open_tab' || input.tab != null
+  if (own) {
+    if (!agent_tabs?.enabled) throw new Error('The user has not let Amp open its own tabs. Ask them to turn on "Let Amp open its own tabs" in the extension popup.')
+    if (input.tab != null && !agent_tabs.tabs.some((t: { tab: number }) => t.tab === input.tab)) throw new Error(`Tab ${input.tab} is not one of this thread's tabs. Open one with browser_open_tab.`)
+  } else {
+    if (!tab) throw new Error('No tab is lent. Ask the user to open the page and click Lend this tab in the extension popup, or open a tab of your own with browser_open_tab.')
+    if (!tab.allow_actions) throw new Error('This tab is lent read-only. Ask the user to turn on "Allow clicks, typing and navigation" in the extension popup.')
+  }
   let url: URL | null = null
   let d: { role: string; name: string; url: string } | null = null
-  if (tool === 'navigate') {
+  if (tool === 'navigate' || tool === 'open_tab') {
     try {
       url = new URL(String(input.url))
     } catch {
       throw new Error('navigate needs an absolute http(s) URL.')
     }
   } else {
-    d = await call(target, ctx, 'describe', { ref: input.ref })
+    d = await call(target, ctx, 'describe', { ref: input.ref, tab: input.tab })
   }
   // An allowance covers one thread on one site: the page's current site, or where navigation goes.
   const site = url ? url.origin : new URL(d!.url).origin
-  const key = `${ctx.thread.id} ${site}`
+  // Allowing a site in your own tabs doesn't allow it in the lent tab, and the other way round.
+  const key = `${ctx.thread.id} ${own ? 'own' : 'lent'} ${site}`
   if (allowed.has(key)) return
   let what: string
   if (url) {
-    what = `Open ${url.href} (site **${url.origin}**) in the tab lent on ${tab.origin}.`
+    what = tool === 'open_tab'
+      ? `Open ${url.href} (site **${url.origin}**) in a new background tab.`
+      : `Open ${url.href} (site **${url.origin}**) in ${own ? `Amp's tab ${input.tab}` : `the tab lent on ${tab.origin}`}.`
   } else {
     const element = `${d!.role}${d!.name ? ` “${d!.name}”` : ''}`
     what = tool === 'click'
@@ -178,7 +187,7 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
   const answer = await ctx.ui.select({
     title: `Amp wants to ${tool} in your browser`,
     message: what,
-    options: ['Allow once', `Allow on ${site} for this thread`, 'Deny'],
+    options: ['Allow once', `Allow on ${site} ${own ? "in this thread's own tabs" : 'in the lent tab'} for this thread`, 'Deny'],
     requireHuman: true,
   })
   if (answer?.startsWith('Allow on ')) allowed.add(key)
@@ -187,21 +196,24 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
 
 // ---- Tools ----
 
-const ref = { type: 'string', description: 'Element ref such as e12 from the latest browser_snapshot.' }
+const ref = { type: 'string', description: 'Element ref such as e12 from the latest browser_snapshot of the same tab.' }
+const tab = { type: 'number', description: 'One of your own tabs, from browser_open_tab. Omit for the tab the user lent.' }
 const tools: { name: string; title: string; description: string; properties?: Record<string, object>; required?: string[] }[] = [
   { name: 'status', title: 'Browser status', description: "Check whether the user's Chrome is connected, which tab is lent, which thread holds it, and how this thread's latest handoff stands (waiting, continued or ended). Call first, and after a browser_handoff call fails." },
-  { name: 'snapshot', title: 'Read page', description: "Outline of the lent tab's accessibility tree. Interactive elements get refs (e1, e2, ...) for click and type; refs expire when the page changes." },
-  { name: 'screenshot', title: 'Screenshot', description: "JPEG of the lent tab's viewport." },
-  { name: 'scroll', title: 'Scroll', description: 'Scroll the page by delta_y pixels (negative scrolls up).', properties: { delta_y: { type: 'number' } }, required: ['delta_y'] },
-  { name: 'click', title: 'Click', description: 'Click an element by ref. The user approves each action unless they allowed this thread.', properties: { ref }, required: ['ref'] },
-  { name: 'type', title: 'Type', description: "Replace a field's contents by ref; submit presses Enter afterwards. Needs the user's approval.", properties: { ref, text: { type: 'string' }, submit: { type: 'boolean' } }, required: ['ref', 'text'] },
-  { name: 'navigate', title: 'Navigate', description: "Load an HTTP(S) URL in the lent tab. Needs the user's approval; the tab stays on its lent site unless the user allowed other sites.", properties: { url: { type: 'string' } }, required: ['url'] },
-  { name: 'handoff', title: 'Hand tab to user', description: 'Show the user a card on the lent tab and wait (up to 30 minutes) until they click Continue. Use for logins, 2FA, captchas and payments; never do those yourself. If an earlier call failed while this thread\'s card was still showing, calling it again waits for that card instead of showing a new one.', properties: { message: { type: 'string', description: 'What the user should do, e.g. "Sign in to GitHub, then click Continue".' } }, required: ['message'] },
+  { name: 'open_tab', title: 'Open tab', description: "Open a URL in a new background tab of your own, in a collapsed Amp tab group, and return its `tab` id for the other tools. Only you can use it; it closes after 10 idle minutes. Needs the user's approval and their \"Let Amp open its own tabs\" setting. Close it with browser_close_tab when done.", properties: { url: { type: 'string' } }, required: ['url'] },
+  { name: 'close_tab', title: 'Close tab', description: 'Close one of your own tabs.', properties: { tab }, required: ['tab'] },
+  { name: 'snapshot', title: 'Read page', description: "Outline of a tab's accessibility tree. Interactive elements get refs (e1, e2, ...) for click and type; refs expire when the page changes.", properties: { tab } },
+  { name: 'screenshot', title: 'Screenshot', description: "JPEG of a tab's viewport.", properties: { tab } },
+  { name: 'scroll', title: 'Scroll', description: 'Scroll the page by delta_y pixels (negative scrolls up).', properties: { delta_y: { type: 'number' }, tab }, required: ['delta_y'] },
+  { name: 'click', title: 'Click', description: 'Click an element by ref. The user approves each action unless they allowed this thread.', properties: { ref, tab }, required: ['ref'] },
+  { name: 'type', title: 'Type', description: "Replace a field's contents by ref; submit presses Enter afterwards. Needs the user's approval.", properties: { ref, text: { type: 'string' }, submit: { type: 'boolean' }, tab }, required: ['ref', 'text'] },
+  { name: 'navigate', title: 'Navigate', description: "Load an HTTP(S) URL in a tab. Needs the user's approval; the lent tab stays on its lent site unless the user allowed other sites.", properties: { url: { type: 'string' }, tab }, required: ['url'] },
+  { name: 'handoff', title: 'Hand tab to user', description: 'Show the user a card on a tab and wait (up to 30 minutes) until they click Continue. Use for logins, 2FA, captchas and payments; never do those yourself. If an earlier call failed while this thread\'s card was still showing, calling it again waits for that card instead of showing a new one.', properties: { message: { type: 'string', description: 'What the user should do, e.g. "Sign in to GitHub, then click Continue".' }, tab }, required: ['message'] },
 ]
 
-async function handoff(target: Target, ctx: PluginToolContext, message: string) {
+async function handoff(target: Target, ctx: PluginToolContext, message: string, tab: unknown) {
   // If this thread's earlier call lost its wait, the bridge hands back that card instead of a new one.
-  const { handoff_id: id, resumed, message: shown } = await call(target, ctx, 'handoff', { message })
+  const { handoff_id: id, resumed, message: shown } = await call(target, ctx, 'handoff', { message, tab })
   // Poll in short requests: a single half-hour request would not survive the portal proxy.
   let outage = 0
   while (!ctx.signal.aborted) {
@@ -317,12 +329,12 @@ export default async function (amp: PluginAPI) {
         if (t.name === 'status') {
           const s = await request(to, ctx.thread.id, '/status', { signal: ctx.signal })
           if (!s.extension_connected) return JSON.stringify({ ...s, next: 'Ask the user to open Chrome; the extension connects to the bridge by itself.' })
-          if (!s.tab) return JSON.stringify({ ...s, next: 'Ask the user to open the page and click Lend this tab in the extension popup.' })
+          if (!s.tab && !s.agent_tabs?.enabled) return JSON.stringify({ ...s, next: 'Ask the user to open the page and click Lend this tab in the extension popup.' })
           if (s.handoff?.state === 'waiting') return JSON.stringify({ ...s, next: 'Your handoff card is still waiting for the user. Call browser_handoff again to wait for it; the tab stays theirs until they click Continue.' })
           return JSON.stringify(s)
         }
-        if (t.name === 'handoff') return handoff(to, ctx, String(input.message ?? ''))
-        if (t.name === 'click' || t.name === 'type' || t.name === 'navigate') await approve(to, ctx, t.name, input)
+        if (t.name === 'handoff') return handoff(to, ctx, String(input.message ?? ''), input.tab)
+        if (['click', 'type', 'navigate', 'open_tab'].includes(t.name)) await approve(to, ctx, t.name, input)
         if (ctx.signal.aborted) throw new Error('Cancelled.')
         const result = await call(to, ctx, t.name, input)
         if (t.name === 'screenshot') {

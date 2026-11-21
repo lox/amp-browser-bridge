@@ -117,7 +117,7 @@ test('handoff returns at once and completes when the user continues, even across
   const started = await call(A, 'handoff', { message: 'Sign in' })
   const id = started.result.handoff_id
   await until(() => ext.messages.some((m) => m.type === 'handoff'))
-  expect(ext.messages.find((m) => m.type === 'handoff')).toEqual({ type: 'handoff', id, message: 'Sign in' })
+  expect(ext.messages.find((m) => m.type === 'handoff')).toEqual({ type: 'handoff', id, message: 'Sign in', thread: A })
   expect((await (await api(`/handoff/${id}?wait=50`, A)).json()).result).toEqual({ waiting: true })
 
   // The service worker restarts: the card survives in session storage and reports on reconnect.
@@ -171,7 +171,7 @@ test('a reconnecting extension that lost the handoff is asked to show it again',
   const again = extension(base, { type: 'hello', key })
   await again.ready
   await until(() => again.messages.some((m) => m.type === 'handoff'))
-  expect(again.messages.find((m) => m.type === 'handoff')).toEqual({ type: 'handoff', id, message: 'Approve the payment' })
+  expect(again.messages.find((m) => m.type === 'handoff')).toEqual({ type: 'handoff', id, message: 'Approve the payment', thread: A })
 })
 
 test('cancelling a handoff tells the extension and ends the wait', async () => {
@@ -239,4 +239,36 @@ test('tells the extension where the bridge is published, and when that changes',
   await until(() => last()?.published === null, 3000)
   expect(last()).toEqual({ type: 'published', published: null })
   expect(JSON.stringify(ext.messages)).not.toContain(b.token)
+})
+
+test("Amp's own tabs skip the lent tab's lease, and each thread sees only its own", async () => {
+  const { base, call, api, code } = bridge()
+  const ext = extension(base, { type: 'hello', code: code(), agent_tabs: { enabled: true, tabs: [{ tab: 7, thread: A, title: 'a', url: 'https://a.test/' }] } })
+  await ext.ready
+  expect((await call(A, 'snapshot')).result.echoed).toBe('snapshot')
+  // B can't take the lent tab from A, but can open and use tabs of its own; the extension checks ownership.
+  expect((await api('/call', B, { method: 'POST', body: JSON.stringify({ tool: 'snapshot' }) })).status).toBe(409)
+  expect((await call(B, 'open_tab', { url: 'https://b.test/' })).result.echoed).toBe('open_tab')
+  expect((await call(B, 'snapshot', { tab: 8 })).result.echoed).toBe('snapshot')
+  expect(ext.messages.filter((m) => m.type === 'command').map((m) => m.thread)).toEqual([A, B, B])
+
+  ext.send({ type: 'agent_tabs', enabled: true, tabs: [{ tab: 7, thread: A, title: 'a', url: 'https://a.test/' }, { tab: 8, thread: B, title: 'b', url: 'https://b.test/' }] })
+  await until(() => false, 50)
+  expect((await (await api('/status', B)).json()).agent_tabs).toEqual({ enabled: true, tabs: [{ tab: 8, title: 'b', url: 'https://b.test/' }] })
+  // A handoff on B's own tab doesn't touch the lease either.
+  expect((await call(B, 'handoff', { message: 'Sign in', tab: 8 })).result.handoff_id).toBeString()
+  expect(ext.messages.find((m) => m.type === 'handoff')).toMatchObject({ thread: B, tab: 8 })
+})
+
+test("an agent-tab handoff can't skip the lease with a bad tab id, and only its thread can wait on it", async () => {
+  const { base, call, api, code } = bridge()
+  const ext = extension(base, { type: 'hello', code: code() })
+  await ext.ready
+  await call(A, 'snapshot')
+  const bad = await api('/call', B, { method: 'POST', body: JSON.stringify({ tool: 'handoff', args: { message: 'x', tab: '8' } }) })
+  expect(bad.status).toBe(400)
+  expect(ext.messages.some((m) => m.type === 'handoff')).toBe(false)
+  const id = (await call(B, 'handoff', { message: 'x', tab: 8 })).result.handoff_id
+  expect((await api(`/handoff/${id}?wait=0`, A)).status).toBe(409)
+  expect((await (await api(`/handoff/${id}?wait=0`, B)).json()).result).toEqual({ waiting: true })
 })
