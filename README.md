@@ -160,7 +160,8 @@ Publishing serves the bridge through a [runner portal](https://ampcode.com/docs/
 by the thread you asked in, and stores `BROWSER_BRIDGE_URL` and `BROWSER_BRIDGE_TOKEN` as personal
 Amp secrets, which every new orb receives. After that, the bridge republishes itself every time it
 starts, re-registering the portal through the same thread and updating `BROWSER_BRIDGE_URL` if the
-address changed.
+address changed. The address depends on the directory the `amp` CLI runs in, so the plugin always
+runs it from `~/.amp-browser-bridge`, and the URL stays the same across restarts and plugin updates.
 
 The extension (`extension/`) attaches Chrome's debugger to the lent tab only. Its state lives in
 session storage, so a service worker restart keeps the lend, the snapshot refs and a waiting
