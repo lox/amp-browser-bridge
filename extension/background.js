@@ -626,7 +626,8 @@ async function openTab(thread, raw, effects) {
   let groupId;
   for (const record of Object.values(records)) {
     const group = record.groupId >= 0 ? await chrome.tabGroups.get(record.groupId).catch(() => null) : null;
-    if (group?.windowId === win.id) groupId = group.id;
+    // A group the user renamed or recoloured is theirs now; start a new one rather than join it.
+    if (group?.windowId === win.id && group.title === GROUP_TITLE && group.color === "green") groupId = group.id;
   }
   try {
     if (groupId != null) await chrome.tabs.group({tabIds: [tab.id], groupId});
@@ -679,8 +680,9 @@ async function closeAgentTab(tabId) {
   tabId = Number(tabId);
   const record = (await getAgentTabs())[tabId];
   if (!record || !await ownedTab(tabId, record)) throw new Error(`Tab ${tabId} is not one of Amp's tabs.`);
-  await forgetAgentTab(tabId);
+  // Removed straight after the ownership check, so a tab the user just dragged out isn't closed.
   await chrome.tabs.remove(tabId).catch(() => {});
+  await forgetAgentTab(tabId);
   return {closed: tabId};
 }
 
