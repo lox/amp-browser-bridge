@@ -42,12 +42,12 @@ publish._
   asks).
 - **Screenshots (1280×800 or 640×400, 1 to 5):** capture these on a Mac with a working setup, at
   1280×800:
-  1. The setup page with all four steps green (`docs/setup-done.png` on the `readme` branch is this
-     shot at another size).
+  1. The setup page with all four steps green (`docs/setup-done.png` is this shot at another size).
   2. The popup open over a lent page, showing **Allow clicks, typing and navigation** and the
-     thread that holds the tab.
+     thread that holds the tab (`docs/popup-lent.png` shows the popup alone).
   3. The Amp app asking to approve a click, next to the page it names.
-  4. The handoff card on a login page, with **Continue**.
+  4. The handoff card on a login page, with **Continue** (`docs/popup-handoff.png` shows the
+     popup's side of it).
   5. The toolbar badges `ON`, `RUN` and `WAIT`.
 - **Small promo tile (440×280):** optional; the icon on `#111827` with the name works.
 - **Homepage / support URL:** https://github.com/lox/amp-browser-bridge

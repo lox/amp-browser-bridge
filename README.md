@@ -49,7 +49,8 @@ minutes and no terminal.
 
 2. **Load the extension.** [Download this repository](https://github.com/lox/amp-browser-bridge/archive/refs/heads/main.zip)
    and unzip it. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**,
-   and pick the `extension` folder. Pin the extension from Chrome's puzzle-piece menu.
+   and pick the `extension` folder. Pin the extension from Chrome's puzzle-piece menu. It always
+   gets the ID `goknnphohomgekkahpdiphdfladfnmoc`, which is how Amp finds its setup page.
 
    Chrome opens a setup page that follows the remaining steps live and says what to do at any
    step that fails. Reopen it any time from the popup's **Setup and status** link.
@@ -182,3 +183,20 @@ bun run check   # type check, syntax check the extension, run the bridge tests
 ```
 
 After changing `extension/`, click **Reload** on its card in `chrome://extensions`.
+
+## Release
+
+```sh
+bun run release            # dist/amp-browser-bridge-<version>.zip, keeps the fixed ID
+bun run release --no-key   # without the manifest key, for a first Chrome Web Store upload
+```
+
+The version comes from `extension/manifest.json`; bump it before each release. The zip is the
+`extension/` folder as is, and the same sources always give the same bytes. Unzip it and use
+**Load unpacked** to try it.
+
+The fixed ID comes from the `key` in `extension/manifest.json` and is exported as `EXTENSION_ID`
+from `plugin/extension-id.ts`; a test fails if they disagree. The extension is not in the Chrome
+Web Store. A store listing would get a store-assigned ID, so both would change together.
+[`docs/chrome-web-store.md`](docs/chrome-web-store.md) drafts the listing, permission
+justifications and screenshots, and [`docs/privacy.md`](docs/privacy.md) the privacy policy.
