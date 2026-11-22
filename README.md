@@ -1,4 +1,7 @@
-# Amp Browser Bridge
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.png">
+  <img src="docs/banner-light.png" alt="Amp Browser Bridge: lend one Chrome tab to your Amp threads, even ones running in an orb in the cloud. An Amp thread in an orb has run browser_snapshot and browser_click and is waiting on browser_handoff, while the lent tab, in Chrome's green Amp tab group, shows the extension's WAIT badge and a card asking you to sign in, then click Continue.">
+</picture>
 
 **Lend one Chrome tab to your [Amp](https://ampcode.com) threads, even ones running in an orb in the
 cloud, or let them open background tabs of their own.** The agent sees the page as you do, logins
@@ -211,11 +214,10 @@ an email can try to steer it.
 
 ## How it works
 
-```text
-orb thread ── browser_* tools ──https──▶ Amp portal ──▶ Amp plugin on your Mac
-                                                          │ bridge on 127.0.0.1:19989
-                                       Chrome extension ◀─┘ (loopback WebSocket)
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/how-dark.png">
+  <img src="docs/how-light.png" alt="How it works. In the cloud, an Amp thread in an orb calls browser tools over https. An Amp portal lets the call in only with your Amp sign-in and the bridge's token. On your Mac, the bridge in the Amp plugin listens on 127.0.0.1:19989 and passes the call over a loopback WebSocket to the Chrome extension, which acts on the one tab you lent, after you approve. For a login, the agent hands the tab back and can't see it until you click Continue.">
+</picture>
 
 `plugin/index.ts` decides its role by platform: on macOS it runs the bridge (`plugin/host.ts`);
 elsewhere it reads `BROWSER_BRIDGE_URL` and `BROWSER_BRIDGE_TOKEN`, signs in to the portal with
@@ -263,6 +265,9 @@ ordinary pages, with IP addresses and query values scrubbed; `test/challenge.tes
 each is classified. Add a page there when detection misses one or flags one wrongly.
 
 After changing `extension/`, click **Reload** on its card in `chrome://extensions`.
+
+The README images and `docs/tweet-card.png` are drawn by `docs/art/art.ts`; its header says how to
+render them.
 
 ## Release
 
