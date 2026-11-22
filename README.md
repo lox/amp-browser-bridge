@@ -93,6 +93,8 @@ miss; the popup lists Amp's tabs with **Show** and **Close**.
   holds the lent tab.
 - Clicks, typing and navigation in them need no checkbox and may go to any site. Amp still asks
   before each action, or once per site per thread.
+- Chrome freezes background tabs, which stops their scripts. Each command unfreezes the tab it runs
+  on, so pages still react to Amp's clicks and keys; Chrome may freeze the tab again afterwards.
 - They close after 10 minutes without a command, never while one runs or while Amp waits for you.
   Turning the setting off closes them all.
 - A handoff in one of them expands its group, shows `WAIT` on every tab's toolbar button, and the
@@ -255,17 +257,28 @@ owning thread and time, never the token), so the setup page can show it.
 ```sh
 bun install
 bun run check   # type check, syntax check the extension, run the tests
-CHROME_BIN=/path/to/chromium bun run e2e   # the real extension in headless Chrome against a real bridge
+bun run e2e     # the real extension in a real Chrome window against a real bridge
 ```
 
 `test/fixtures/challenges/` holds what the challenge probe read from real challenge, block and
 ordinary pages, with IP addresses and query values scrubbed; `test/challenge.test.ts` checks how
 each is classified. Add a page there when detection misses one or flags one wrongly.
 
-`bun run e2e` runs each `test/e2e/*.e2e.ts` on a fresh bridge home and Chrome profile, using ports
-8765, 9333 and 19989, so quit a running bridge first. `CHROME_BIN` must be Chromium or Chrome for
-Testing; branded Chrome ignores `--load-extension`. Pass a name to run one script, such as
-`bun run e2e lend`. CI runs both on Buildkite with
+`bun run e2e` runs each `test/e2e/*.e2e.ts` against a fresh bridge and a fresh headed Chrome with
+the extension loaded and Developer mode on, using ports 8765, 9333 and 19989, so quit a running
+bridge first. The scripts click what a person clicks: the toolbar popup, the setup page and its
+`setup.html#code=` pairing link, **Reload** in `chrome://extensions`, and **Continue** on a sign-in
+handoff. On Linux without a display it starts Xvfb (`apt-get install xvfb`). `CHROME_BIN` must be
+Chromium or Chrome for Testing, because branded Chrome ignores `--load-extension`; it defaults to
+agent-browser's newest Chrome for Testing. Pass a name to run one script, such as `bun run e2e popup`, and
+set `E2E_SHOTS=<dir>` to save screenshots of the whole screen at the steps worth seeing.
+
+In an Amp orb, `portal.e2e.ts` also serves the bridge through the thread's portal and runs the
+plugin in its client role against it, from a mount namespace that sends its requests out through
+Amp's portal proxy with a portal sign-in, as another orb's are. It needs passwordless `sudo` for
+that and skips itself outside an orb. It never touches the `BROWSER_BRIDGE_URL` and
+`BROWSER_BRIDGE_TOKEN` secrets. A check marked `KNOWN` is a known bug: it doesn't fail the run until
+the bug is fixed. CI runs `bun run check` and `bun run e2e` on Buildkite with
 [`.buildkite/pipeline.yml`](.buildkite/pipeline.yml).
 
 After changing `extension/`, click **Reload** on its card in `chrome://extensions`.

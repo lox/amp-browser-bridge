@@ -1,6 +1,6 @@
-// Release keeps the tab grouped; a lend that ends without Stop (an extension reload) still clears
+// Release keeps the tab grouped; a lend that ends without Stop (Reload in chrome://extensions) still clears
 // the Amp group and leaves the user's own groups alone.
-import { PAGE, check, done, evaluate, message, pair, restartWorker, wakeWorker } from './lib'
+import { PAGE, check, done, evaluate, message, pair, reloadExtension, restartWorker, until, wakeWorker } from './lib'
 
 let { send: sw } = await wakeWorker()
 const ev = (expression: string) => evaluate(sw, expression)
@@ -25,12 +25,12 @@ check('Release keeps the tab lent and grouped', (await message({ action: 'state'
 await Bun.sleep(800)
 check('worker restart while lent keeps the group', (await message({ action: 'state' })).lend && (await groupOf(tab)) === 'Amp')
 
-// chrome.runtime.reload() doesn't restart an unpacked extension in headless Chrome, so reproduce
-// a reload's effect on this code: session storage wiped, then a fresh worker.
-await ev('chrome.storage.session.clear()')
-;({ send: sw } = await restartWorker())
+// Reload on chrome://extensions, as after a change to extension/: session storage is wiped and a
+// fresh worker starts.
+;({ send: sw } = await reloadExtension())
 await Bun.sleep(800)
 check('after extension reload nothing is lent', (await message({ action: 'state' })).lend === null)
+check('after extension reload it reconnects without pairing again', await until(async () => (await message({ action: 'state' })).connected))
 check('after extension reload the lent tab is back in Work', (await groupOf(tab)) === 'Work', await groupOf(tab))
 check("the user's own green \"Amp\" group is untouched", (await groupId(mine)) === mineGroup)
 check('the cleanup record is cleared', (await cleanupRecord()) === null)
