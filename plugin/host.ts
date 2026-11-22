@@ -10,7 +10,7 @@ import type { Server, ServerWebSocket } from 'bun'
 import { createECDH, createHash, createHmac, pbkdf2Sync, randomBytes, timingSafeEqual } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, unwatchFile, watchFile, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { EXTENSION_ID } from './extension-id'
+import { EXTENSION_IDS } from './extension-id'
 
 export const DEFAULT_PORT = 19989
 /** A thread that hasn't used the tab for this long loses it to the next thread that asks. */
@@ -46,7 +46,7 @@ export type Published = { url: string; thread: string; at: string }
 type Outcome = { result?: unknown; error?: string; unknown?: boolean }
 type Handoff = { id: string; thread: string; tab?: number; message: string; started: number; ended?: number; outcome?: Outcome; timer?: Timer; waiters: Set<(o: Outcome) => void> }
 /** Where an extension link is in the handshake (see onHandshake), and what it has agreed so far. */
-type Link = { phase: 'hello' | 'pair' | 'auth' | 'ready'; nonce?: string; bridgeNonce?: string; session?: Buffer; code?: string; timer?: Timer }
+type Link = { phase: 'hello' | 'pair' | 'auth' | 'ready'; id?: string; nonce?: string; bridgeNonce?: string; session?: Buffer; code?: string; timer?: Timer }
 type Socket = ServerWebSocket<Link>
 
 function same(a: unknown, b: string) {
@@ -117,6 +117,20 @@ export function readPublished(dir: string): Published | null {
   }
 }
 
+function extensionIDFile(dir: string) {
+  return join(dir, 'extension-id')
+}
+
+/**
+ * The ID to open the extension's setup page under: the known build (store or unpacked) that last
+ * reached the bridge, else the most preferred one. Opening an ID that isn't installed only shows
+ * Chrome's "blocked" page, so this has to guess right.
+ */
+export function setupPageID(dir: string) {
+  const seen = existsSync(extensionIDFile(dir)) ? readFileSync(extensionIDFile(dir), 'utf8').trim() : ''
+  return EXTENSION_IDS.includes(seen) ? seen : EXTENSION_IDS[0]
+}
+
 /** Records where the bridge is published, or that it is not (null). A running bridge passes it on to the extension. */
 export function writePublished(dir: string, p: Published | null) {
   if (p) writeFileSync(publishedFile(dir), JSON.stringify(p) + '\n', { mode: 0o600 })
@@ -156,6 +170,14 @@ export function startBridge(options: BridgeOptions) {
     pairingFailures = 0
     writeFileSync(join(dir, 'pairing-code'), pairingCode + '\n', { mode: 0o600 })
     return pairingCode
+  }
+
+  /** Remembers which known build reached the bridge, for setupPageID. Unknown IDs are ignored, so a forged one can't redirect pairing. */
+  let seenID = ''
+  function noteExtension(id: string | null | undefined) {
+    if (!id || id === seenID || !EXTENSION_IDS.includes(id)) return
+    seenID = id
+    writeFileSync(extensionIDFile(dir), id + '\n', { mode: 0o600 })
   }
 
   let extension: Socket | null = null
@@ -410,6 +432,7 @@ export function startBridge(options: BridgeOptions) {
   }
 
   function onAuthenticated(ws: Socket, message: any) {
+    noteExtension(ws.data.id)
     // 4001 tells the old connection not to reconnect, so two paired browsers don't take turns.
     if (extension && extension !== ws) extension.close(4001, 'replaced')
     extension = ws
@@ -439,13 +462,19 @@ export function startBridge(options: BridgeOptions) {
       if (url.pathname === '/ext') {
         // Chrome sends the extension's own Origin, and the Host it dialled. Any local program can
         // send both, so the handshake is what authenticates; these turn away web pages, other
-        // extensions and DNS rebinding before it starts.
+        // extensions and DNS rebinding before it starts. Either known build (store or unpacked) may connect.
         const host = req.headers.get('host')
-        if (req.headers.get('origin') !== `chrome-extension://${EXTENSION_ID}` || (host !== `127.0.0.1:${server.port}` && host !== `localhost:${server.port}`)) {
+        const origin = req.headers.get('origin') ?? ''
+        const id = origin.startsWith('chrome-extension://') ? origin.slice('chrome-extension://'.length) : ''
+        if (!EXTENSION_IDS.includes(id) || (host !== `127.0.0.1:${server.port}` && host !== `localhost:${server.port}`)) {
           return new Response('forbidden', { status: 403 })
         }
-        return server.upgrade(req, { data: { phase: 'hello' } }) ? undefined : new Response('upgrade failed', { status: 400 })
+        // Recorded once the handshake proves it (onAuthenticated): a build with a stale key retrying
+        // must not decide where the next pairing code goes.
+        return server.upgrade(req, { data: { phase: 'hello', id } }) ? undefined : new Response('upgrade failed', { status: 400 })
       }
+      // An unpaired extension never opens /ext; it probes /status, and Chrome sends no Origin there.
+      if (url.pathname === '/status') noteExtension(req.headers.get('x-extension-id'))
       // Web pages can't sign requests, but there is no reason to let one try. Requests through a
       // portal keep the portal's Host, so the Host can't be checked here.
       const site = req.headers.get('sec-fetch-site')

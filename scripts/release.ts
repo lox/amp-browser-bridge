@@ -2,7 +2,7 @@
 // unpacked or upload to the Chrome Web Store.
 //
 //   bun run release            # keeps the manifest key, so the ID stays fixed
-//   bun run release --no-key   # drops it, for the first Chrome Web Store upload
+//   bun run release --no-key   # drops it, for Chrome Web Store uploads (the store keeps its own key)
 //
 // The zip is written here rather than with `zip` so the build needs no extra
 // tools and the same sources always give the same bytes.
@@ -15,6 +15,8 @@ const root = join(import.meta.dir, "..");
 const src = join(root, "extension");
 const manifest = JSON.parse(readFileSync(join(src, "manifest.json"), "utf8"));
 
+// The Chrome Web Store refuses a package whose description is longer than this.
+if ([...manifest.description].length > 132) throw new Error(`manifest description is ${[...manifest.description].length} characters; the store allows 132`);
 if (!/^\d+(\.\d+){0,3}$/.test(manifest.version)) throw new Error(`manifest version ${manifest.version} is not one Chrome accepts`);
 const referenced = [manifest.background.service_worker, manifest.action.default_popup, ...Object.values(manifest.icons)];
 for (const file of referenced as string[]) if (!existsSync(join(src, file))) throw new Error(`manifest names ${file}, which is missing`);

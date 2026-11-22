@@ -1172,7 +1172,10 @@ async function state() {
 /** Whether something answers on the bridge's port when the extension isn't connected to it. */
 async function probe() {
   try {
-    const res = await fetch(BRIDGE.replace("ws:", "http:").replace("/ext", "/status"), {signal: AbortSignal.timeout(1500)});
+    // The ID tells the bridge which build (store or unpacked) to open the setup page in when pairing.
+    const res = await fetch(BRIDGE.replace("ws:", "http:").replace("/ext", "/status"), {
+      headers: {"x-extension-id": chrome.runtime.id}, signal: AbortSignal.timeout(1500),
+    });
     // The bridge answers 401 "unauthorized" without its token.
     return res.status === 401 && (await res.text()) === "unauthorized" ? "found" : "other";
   } catch {
