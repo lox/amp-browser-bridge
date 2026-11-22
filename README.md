@@ -1,18 +1,11 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.png">
-  <img src="docs/banner-light.png" alt="Amp Browser Bridge: lend one Chrome tab to your Amp threads, even ones running in an orb in the cloud. An Amp thread in an orb has run browser_snapshot and browser_click and is waiting on browser_handoff, while the lent tab, in Chrome's green Amp tab group, shows the extension's WAIT badge and a card asking you to sign in, then click Continue.">
+  <img src="docs/banner-light.png" alt="Amp Browser Bridge: lend one Chrome tab to your Amp threads. The lent tab, in Chrome's green Amp tab group, shows the extension's WAIT badge and a card asking you to sign in, then click Continue.">
 </picture>
 
-**Lend one Chrome tab to your [Amp](https://ampcode.com) threads, even ones running in an orb in the
-cloud, or let them open background tabs of their own.** The agent reads the page as you see it,
-logins included, and asks before it clicks or types. When a step needs a person, like a login, a 2FA
-code or a payment, it hands the tab back to you and waits.
-
-<p align="center">
-  <img src="docs/popup-lent.png" width="320" alt="The extension popup with a tab lent read-only">
-  &nbsp;
-  <img src="docs/popup-handoff.png" width="320" alt="The popup while Amp waits for you to sign in and click Continue">
-</p>
+Your [Amp](https://ampcode.com) threads, even ones running in an orb in the cloud, can read a Chrome
+tab you lend them, logins included, and ask before they click or type. When a step needs a person,
+like a login, a 2FA code or a payment, the agent hands the tab back to you and waits.
 
 Ask things like:
 
