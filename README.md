@@ -107,6 +107,8 @@ miss; the popup lists Amp's tabs with **Show** and **Close**.
   holds the lent tab.
 - Clicks, typing and navigation in them need no checkbox and may go to any site. Amp still asks
   before each action, or once per site per thread.
+- Chrome freezes background tabs, which stops their scripts. Each command unfreezes the tab it runs
+  on, so pages still react to Amp's clicks and keys; Chrome may freeze the tab again afterwards.
 - They close after 10 minutes without a command, never while one runs or while Amp waits for you.
   Turning the setting off closes them all.
 - A handoff in one of them expands its group, shows `WAIT` on every tab's toolbar button, and the
