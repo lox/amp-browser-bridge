@@ -46,7 +46,7 @@ export type Published = { url: string; thread: string; at: string }
 type Outcome = { result?: unknown; error?: string; unknown?: boolean }
 type Handoff = { id: string; thread: string; tab?: number; message: string; started: number; ended?: number; outcome?: Outcome; timer?: Timer; waiters: Set<(o: Outcome) => void> }
 /** Where an extension link is in the handshake (see onHandshake), and what it has agreed so far. */
-type Link = { phase: 'hello' | 'pair' | 'auth' | 'ready'; nonce?: string; bridgeNonce?: string; session?: Buffer; code?: string; timer?: Timer }
+type Link = { phase: 'hello' | 'pair' | 'auth' | 'ready'; id?: string; nonce?: string; bridgeNonce?: string; session?: Buffer; code?: string; timer?: Timer }
 type Socket = ServerWebSocket<Link>
 
 function same(a: unknown, b: string) {
@@ -432,6 +432,7 @@ export function startBridge(options: BridgeOptions) {
   }
 
   function onAuthenticated(ws: Socket, message: any) {
+    noteExtension(ws.data.id)
     // 4001 tells the old connection not to reconnect, so two paired browsers don't take turns.
     if (extension && extension !== ws) extension.close(4001, 'replaced')
     extension = ws
@@ -468,8 +469,9 @@ export function startBridge(options: BridgeOptions) {
         if (!EXTENSION_IDS.includes(id) || (host !== `127.0.0.1:${server.port}` && host !== `localhost:${server.port}`)) {
           return new Response('forbidden', { status: 403 })
         }
-        noteExtension(id)
-        return server.upgrade(req, { data: { phase: 'hello' } }) ? undefined : new Response('upgrade failed', { status: 400 })
+        // Recorded once the handshake proves it (onAuthenticated): a build with a stale key retrying
+        // must not decide where the next pairing code goes.
+        return server.upgrade(req, { data: { phase: 'hello', id } }) ? undefined : new Response('upgrade failed', { status: 400 })
       }
       // An unpaired extension never opens /ext; it probes /status, and Chrome sends no Origin there.
       if (url.pathname === '/status') noteExtension(req.headers.get('x-extension-id'))

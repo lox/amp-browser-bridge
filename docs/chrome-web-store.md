@@ -205,9 +205,12 @@ themselves in an "Amp" tab group, through…*
 **Remote code:** No. All code ships in the package; the extension exchanges data only with the
 bridge on the user's computer.
 
-**Data usage:** tick **Website content** only (page text, accessibility tree, screenshots and the
-address of the tabs Amp works in). Leave the rest unticked: the extension keeps no history and
-reads no credentials. Certify all three statements: not sold, not used for unrelated purposes, not
+**Data usage:** tick **Website content** (page text, accessibility tree and screenshots of the tabs
+Amp works in), **Web history** (the titles and addresses of those tabs, which the thread sees) and
+**Authentication information** (with `browser_fill`, a password or one-time code the user gave the
+thread passes through the extension into the page; it isn't kept, and the tool's result hides it).
+Leave the rest unticked: the extension keeps no history and never reads saved passwords or
+cookies. Certify all three statements: not sold, not used for unrelated purposes, not
 used for creditworthiness or lending.
 
 **Why not `activeTab`:** it would narrow host access, but the handoff card has to appear later,

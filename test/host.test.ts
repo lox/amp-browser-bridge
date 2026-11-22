@@ -433,3 +433,13 @@ test('remembers which known extension build reached it, for the setup page', asy
   writeFileSync(join(dir, 'extension-id'), 'not-an-id\n')
   expect(setupPageID(dir)).toBe(EXTENSION_IDS[0])
 })
+
+test('only an extension that completes the handshake is remembered from /ext', async () => {
+  const { base, dir, code } = bridge()
+  const seen = () => (existsSync(join(dir, 'extension-id')) ? readFileSync(join(dir, 'extension-id'), 'utf8').trim() : '')
+  // A build with a key the bridge doesn't know, retrying: refused, and not recorded.
+  expect(await extension(base, { key: 'stale' }).closed).toBe(1008)
+  expect(seen()).toBe('')
+  await extension(base, { code: code() }).ready
+  expect(seen()).toBe(UNPACKED_ID)
+})

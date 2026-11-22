@@ -18,7 +18,10 @@ thread opens itself, which open in the background in a green **Amp** tab group. 
 - **Tab details.** The tab's title and address.
 
 If you allow actions, it also clicks, types, scrolls and navigates in those tabs when a thread asks
-and you approve. It never reads your other tabs, your history, cookies or passwords. It stops when
+and you approve. That can include entering a password or one-time code you gave the thread: the
+value passes through the extension into the page, isn't stored, and is hidden in the approval
+prompt and in what the thread gets back. It never reads your other tabs, your history, cookies or
+saved passwords. It stops when
 you stop lending, close the tab, or click **Cancel** on Chrome's debugging bar.
 
 ## Where that data goes
