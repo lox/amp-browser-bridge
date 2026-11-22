@@ -1,7 +1,11 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.png">
-  <img src="docs/banner-light.png" alt="Amp Browser Bridge: lend one Chrome tab to your Amp threads. The lent tab, in Chrome's green Amp tab group, shows the extension's WAIT badge and a card asking you to sign in, then click Continue.">
-</picture>
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.png">
+    <img src="docs/banner-light.png" alt="Amp Browser Bridge: lend one Chrome tab to your Amp threads. The lent tab, in Chrome's green Amp tab group, shows the extension's WAIT badge and a card asking you to sign in, then click Continue.">
+  </picture>
+</p>
+
+<br>
 
 Your [Amp](https://ampcode.com) threads, even ones running in an orb in the cloud, can read a Chrome
 tab you lend them, logins included, and ask before they click or type. When a step needs a person,
