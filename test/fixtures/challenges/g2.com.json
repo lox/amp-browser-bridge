@@ -1,0 +1,18 @@
+{
+  "source": "https://www.g2.com/",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "https://www.g2.com/",
+    "title": "g2.com",
+    "text": "",
+    "textLength": 0,
+    "frameUrls": [
+      "https://geo.captcha-delivery.com/interstitial/?initialCid=x&hash=x&cid=x&referer=x&s=48621&e=x&b=1637&dm=cd"
+    ],
+    "scriptSrcs": [
+      "https://ct.captcha-delivery.com/i.js"
+    ],
+    "selectors": [],
+    "visibleSelectors": []
+  }
+}

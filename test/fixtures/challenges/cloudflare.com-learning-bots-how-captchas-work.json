@@ -1,0 +1,17 @@
+{
+  "source": "https://www.cloudflare.com/learning/bots/how-captchas-work/",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "https://www.cloudflare.com/learning/bots/how-captchas-work/",
+    "title": "Just a moment...",
+    "text": "www.cloudflare.com\nPerforming security verification\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nRay ID: a5e2b805df79ec54\nPerformance and Security by Cloudflare\nPrivacy",
+    "textLength": 266,
+    "frameUrls": [],
+    "scriptSrcs": [
+      "https://www.cloudflare.com/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1?ray=x",
+      "https://challenges.cloudflare.com/turnstile/v0/b/f8df4d4a0cd6/api.js?onload=x&render=explicit"
+    ],
+    "selectors": [],
+    "visibleSelectors": []
+  }
+}

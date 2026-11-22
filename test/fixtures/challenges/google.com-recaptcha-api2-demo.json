@@ -1,0 +1,24 @@
+{
+  "source": "https://www.google.com/recaptcha/api2/demo",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "https://www.google.com/recaptcha/api2/demo",
+    "title": "ReCAPTCHA demo",
+    "text": "Sample Form with ReCAPTCHA\nFirst Name\nLast Name\nEmail\n\nPick your favorite color:\n\nRed\nGreen",
+    "textLength": 91,
+    "frameUrls": [
+      "https://www.google.com/recaptcha/api2/anchor?ar=1&k=x&co=x&hl=en&v=x&size=normal&sa=action&anchor-ms=20000&execute-ms=30000&ovv=CADq00gF&cb=x",
+      "https://www.google.com/recaptcha/api2/bframe?hl=en&v=x&k=x&bft=x&ca=false"
+    ],
+    "scriptSrcs": [
+      "https://www.gstatic.com/recaptcha/releases/4i3aN5wAweL7i3ADI7BSX4B-/recaptcha__en.js",
+      "https://www.google.com/recaptcha/api.js"
+    ],
+    "selectors": [
+      ".g-recaptcha"
+    ],
+    "visibleSelectors": [
+      ".g-recaptcha"
+    ]
+  }
+}

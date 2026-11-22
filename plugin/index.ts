@@ -220,6 +220,23 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
   else if (answer !== 'Allow once') throw new Error('The user denied this browser action.')
 }
 
+// ---- Bot challenges ----
+
+type Challenge = { vendor: string; kind: 'non-interactive' | 'interactive' | 'block'; signal: string; url: string; waited_ms: number }
+
+/** What the agent should do about a bot challenge the extension found on the page (extension/challenge.js). */
+export function challengeAdvice(c: Challenge): string {
+  let site = c.url
+  try {
+    site = new URL(c.url).origin
+  } catch {}
+  if (c.kind === 'block') {
+    return `${site} refused the visit (${c.vendor} block page, ${c.signal}). Don't retry or reload: that makes the block worse for the user's IP and account. Stop and tell the user.`
+  }
+  const still = c.waited_ms > 0 ? `, still there after ${Math.round(c.waited_ms / 1000)} s` : ''
+  return `${site} shows a ${c.vendor} bot check (${c.signal}${still}). Don't retry, reload or try to solve it: call browser_handoff with a message like "Complete the security check on ${site}, then click Continue", then take a new snapshot.`
+}
+
 // ---- Tools ----
 
 const ref = { type: 'string', description: 'Element ref such as e12 from the latest browser_snapshot of the same tab.' }
@@ -228,9 +245,9 @@ const tab = { type: 'number', description: 'One of your own tabs, from browser_o
 const MUTATING = new Set(['click', 'type', 'fill', 'press', 'select', 'navigate'])
 const tools: { name: string; title: string; description: string; properties?: Record<string, object>; required?: string[] }[] = [
   { name: 'status', title: 'Browser status', description: "Check whether the user's Chrome is connected, which tab is lent, which thread holds it, and how this thread's latest handoff stands (waiting, continued or ended). Call first, and after a browser_handoff call fails. When it returns `next`, tell the user that step and wait for them; don't retry." },
-  { name: 'open_tab', title: 'Open tab', description: "Open a URL in a new background tab of your own, in a collapsed Amp tab group, and return its `tab` id for the other tools. Only you can use it; it closes after 10 idle minutes. Needs the user's approval and their \"Let Amp open its own tabs\" setting. Close it with browser_close_tab when done.", properties: { url: { type: 'string' } }, required: ['url'] },
+  { name: 'open_tab', title: 'Open tab', description: "Open a URL in a new background tab of your own, in a collapsed Amp tab group, and return its `tab` id for the other tools. Only you can use it; it closes after 10 idle minutes. Needs the user's approval and their \"Let Amp open its own tabs\" setting. Close it with browser_close_tab when done. Like browser_navigate, it reports a bot check or block page in challenge and next.", properties: { url: { type: 'string' } }, required: ['url'] },
   { name: 'close_tab', title: 'Close tab', description: 'Close one of your own tabs.', properties: { tab }, required: ['tab'] },
-  { name: 'snapshot', title: 'Read page', description: "Outline of a tab's accessibility tree, with refs (e1, e2, ...) on interactive elements for the action tools; refs expire when the page changes. Work in a loop: read the page, act with the narrowest tool, then read it again to check, since an action that returned may not have worked.", properties: { tab } },
+  { name: 'snapshot', title: 'Read page', description: "Outline of a tab's accessibility tree, with refs (e1, e2, ...) on interactive elements for the action tools; refs expire when the page changes. Work in a loop: read the page, act with the narrowest tool, then read it again to check, since an action that returned may not have worked. If the page is a bot check or block page, the outline starts with what to do instead.", properties: { tab } },
   { name: 'screenshot', title: 'Screenshot', description: "JPEG of a tab's viewport.", properties: { tab } },
   { name: 'wait_for', title: 'Wait for page', description: 'Wait until the page shows text, its URL contains url, or an element with role (and name) appears; all given conditions must hold. Fails after timeout_ms. Read the page again afterwards.', properties: { text: { type: 'string', description: 'Text on the page; case-insensitive.' }, url: { type: 'string', description: 'A substring of the URL.' }, role: { type: 'string', description: 'A role as browser_snapshot shows it, such as button or heading.' }, name: { type: 'string', description: "Part of the element's name; needs role." }, timeout_ms: { type: 'number', description: 'Default 10000, at most 20000.' }, tab } },
   { name: 'scroll', title: 'Scroll', description: 'Scroll the page by delta_y pixels (negative scrolls up).', properties: { delta_y: { type: 'number' }, tab }, required: ['delta_y'] },
@@ -239,8 +256,8 @@ const tools: { name: string; title: string; description: string; properties?: Re
   { name: 'fill', title: 'Fill field', description: "Like browser_type, but on password and one-time-code fields the value is hidden in the approval prompt and the result. Only enter credentials the user gave you; otherwise hand off. Needs the user's approval.", properties: { ref, value: { type: 'string' }, submit: { type: 'boolean' }, tab }, required: ['ref', 'value'] },
   { name: 'press', title: 'Press key', description: "Press a key such as Enter, Escape, Tab or ArrowDown, optionally with Shift+, Control+, Alt+ or Meta+. With ref it focuses that element first; without, the key goes to whatever has focus. Needs the user's approval.", properties: { key: { type: 'string' }, ref, tab }, required: ['key'] },
   { name: 'select', title: 'Select option', description: "Choose an option of a <select> by ref, by its value or label. For a custom dropdown, click it, then click the option. Needs the user's approval.", properties: { ref, value: { type: 'string', description: "The option's value or label." }, tab }, required: ['ref', 'value'] },
-  { name: 'navigate', title: 'Navigate', description: "Load an HTTP(S) URL in a tab. Needs the user's approval; the lent tab stays on its lent site unless the user allowed other sites.", properties: { url: { type: 'string' }, tab }, required: ['url'] },
-  { name: 'handoff', title: 'Hand tab to user', description: 'Show the user a card on a tab and wait (up to 30 minutes) until they click Continue. Use for logins, 2FA, captchas and payments; never solve a captcha or do those yourself, and don\'t retry a site that blocks you. If an earlier call failed while this thread\'s card was still showing, calling it again waits for that card instead of showing a new one.', properties: { message: { type: 'string', description: 'What the user should do, e.g. "Sign in to GitHub, then click Continue".' }, tab }, required: ['message'] },
+  { name: 'navigate', title: 'Navigate', description: "Load an HTTP(S) URL in a tab and wait for it to load. Needs the user's approval; the lent tab stays on its lent site unless the user allowed other sites. Returns url and title; when the page is a bot check (Cloudflare, a captcha wall) or an \"access denied\" block page, also challenge and next: follow next, usually browser_handoff, and never retry the navigation.", properties: { url: { type: 'string' }, tab }, required: ['url'] },
+  { name: 'handoff', title: 'Hand tab to user', description: 'Show the user a card on a tab and wait (up to 30 minutes) until they click Continue. Use for logins, 2FA, captchas, bot checks and payments; never solve a captcha or do those yourself, and don\'t retry a site that blocks you. If an earlier call failed while this thread\'s card was still showing, calling it again waits for that card instead of showing a new one.', properties: { message: { type: 'string', description: 'What the user should do, e.g. "Sign in to GitHub, then click Continue".' }, tab }, required: ['message'] },
 ]
 
 async function handoff(target: Target, ctx: PluginToolContext, message: string, tab: unknown) {
@@ -377,8 +394,9 @@ export default async function (amp: PluginAPI) {
             return [{ type: 'image', mimeType: 'image/jpeg', data: result.data }]
           }
         }
-        if (t.name === 'snapshot') return `${result.title}\n${result.url}${result.truncated ? '\n(truncated)' : ''}\n\n${result.outline}`
-        return JSON.stringify(result)
+        const advice = result.challenge ? challengeAdvice(result.challenge) : ''
+        if (t.name === 'snapshot') return `${advice ? `${advice}\n\n` : ''}${result.title}\n${result.url}${result.truncated ? '\n(truncated)' : ''}\n\n${result.outline}`
+        return JSON.stringify(advice ? { ...result, next: advice } : result)
       },
     })
   }

@@ -3,6 +3,8 @@
 // Everything that must survive a service worker restart lives in chrome.storage.session: the lent
 // tab and its permissions, each tab's latest snapshot refs, a waiting handoff and the lease. Amp's
 // own tabs are recorded in chrome.storage.local, so they stay Amp's across a reload of the extension.
+import {PROBE_SELECTORS, classifyChallenge, probePage} from "./challenge.js";
+
 const BRIDGE = "ws://127.0.0.1:19989/ext";
 const SNAPSHOT_LIMIT = 120_000;
 const MUTATING = new Set(["click", "type", "fill", "press", "select", "navigate"]);
@@ -11,6 +13,10 @@ const EDITABLE = new Set(["textbox", "searchbox", "spinbutton"]);
 const WAIT_LIMIT_MS = 20_000;
 /** Amp's own tabs close after this long without a command. */
 const AGENT_TAB_IDLE_MS = 10 * 60_000;
+// A navigation waits this long for the page to load, then this long for a bot check that clears by
+// itself, which keeps the whole command well inside the bridge's and the portal's timeouts.
+const LOAD_WAIT_MS = 10_000;
+const CHALLENGE_WAIT_MS = 12_000;
 
 let socket = null;
 let ready = false;
@@ -325,7 +331,7 @@ async function execute(lend, tool, args, effects) {
     throw new Error(`The tab has left ${lend.origin}, the site it was lent on. Ask the user to go back or to allow other sites.`);
   }
   switch (tool) {
-    case "snapshot": return snapshot(target, lend, tab);
+    case "snapshot": return withChallenge(lend, await snapshot(target, lend, tab), 0);
     case "describe": return describe(target, lend, tab, args.ref);
     case "screenshot": return screenshot(target, lend);
     case "scroll": return scroll(target, Number(args.delta_y), effects);
@@ -707,7 +713,69 @@ async function navigate(target, lend, raw, effects) {
   effects.sent = true;
   const result = await cdp(target, "Page.navigate", {url: url.toString()});
   if (result.errorText) throw new Error(result.errorText);
-  return {url: url.toString()};
+  await waitForLoad(target.tabId);
+  const tab = await chrome.tabs.get(target.tabId);
+  return withChallenge(lend, {url: tab.url, title: tab.title}, CHALLENGE_WAIT_MS);
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Waits until the tab has loaded, or LOAD_WAIT_MS has passed; a slow page is not an error. */
+async function waitForLoad(tabId) {
+  for (const started = Date.now(); Date.now() - started < LOAD_WAIT_MS; await sleep(250)) {
+    if ((await chrome.tabs.get(tabId)).status === "complete") return;
+  }
+}
+
+// ---- Bot challenges ----
+// After a navigation, and with each snapshot, the page is checked for a bot challenge or block page
+// (challenge.js), so the agent hands it to the user instead of retrying. Nothing here ever answers one.
+
+/** Adds `challenge` to a result when the lent tab shows a bot check that waiting `waitMs` did not clear. */
+async function withChallenge(lend, result, waitMs) {
+  const challenge = await detectChallenge(lend, waitMs);
+  return challenge ? {...result, challenge} : result;
+}
+
+/** Reads the page in an isolated world, invisible to its scripts. Null mid-navigation or off the lent site. */
+async function probeChallenge(lend) {
+  const [frame] = await chrome.scripting.executeScript({target: {tabId: lend.tabId}, world: "ISOLATED", func: probePage, args: [PROBE_SELECTORS]}).catch(() => []);
+  const probe = frame?.result;
+  if (!probe || (!lend.anyOrigin && originOf(probe.url) !== lend.origin)) return null;
+  // Turnstile puts its iframe in a closed shadow root, out of querySelector's reach; the frame tree has it.
+  const {frameTree} = await cdp({tabId: lend.tabId}, "Page.getFrameTree").catch(() => ({}));
+  const frames = [];
+  const collect = (node) => {
+    for (const child of node?.childFrames || []) {
+      frames.push(child.frame.url);
+      collect(child);
+    }
+  };
+  collect(frameTree);
+  return {...probe, frameUrls: [...new Set([...probe.frameUrls, ...frames])].slice(0, 50)};
+}
+
+/**
+ * {vendor, kind, signal, url, waited_ms} for a challenge on the lent tab, or null. A check the browser
+ * clears by itself ("non-interactive") is polled for up to `waitMs` and is null once it has gone.
+ */
+async function detectChallenge(lend, waitMs) {
+  const first = await probeChallenge(lend);
+  let found = first && classifyChallenge(first);
+  if (!found) return null;
+  let url = first.url;
+  const started = Date.now();
+  while (found.kind === "non-interactive" && Date.now() - started < waitMs) {
+    await sleep(1000);
+    // A challenge often clears by navigating; a page that can't be read yet counts as still waiting.
+    const probe = await probeChallenge(lend);
+    if (!probe) continue;
+    const next = classifyChallenge(probe);
+    if (!next) return null;
+    found = next;
+    url = probe.url;
+  }
+  return {...found, url, waited_ms: Date.now() - started};
 }
 
 async function scroll(target, dy, effects) {
@@ -949,7 +1017,7 @@ async function openTab(thread, raw, effects) {
   const now = await chrome.tabs.get(tab.id);
   await sendAgentTabs();
   await badge();
-  return {tab: tab.id, url: now.url || url.toString(), title: now.title || ""};
+  return withChallenge({tabId: tab.id, anyOrigin: true}, {tab: tab.id, url: now.url || url.toString(), title: now.title || ""}, CHALLENGE_WAIT_MS);
 }
 
 /** Drops a tab from Amp's tabs without closing it. */

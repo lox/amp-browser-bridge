@@ -1,0 +1,20 @@
+{
+  "source": "https://github.com/login",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "https://github.com/login",
+    "title": "Sign in to GitHub · GitHub",
+    "text": "Skip to content\nSign in to GitHub\nUsername or email address\nPassword\nForgot password?\nor\nContinue with Google\nContinue with Apple\n\nNew to GitHub? Create an account\n\nSign in with a passkey\n\nTerms\nPrivacy\nDocs\nContact GitHub Support\nManage cookies\nDo not share my personal information",
+    "textLength": 282,
+    "frameUrls": [],
+    "scriptSrcs": [
+      "https://github.githubassets.com/assets/high-contrast-cookie-74ae35aa09cc7c63.js",
+      "https://github.githubassets.com/assets/core-5c867a2e8343b2a4.js",
+      "https://github.githubassets.com/assets/settings-d20637413060707e.js",
+      "https://github.githubassets.com/assets/sessions-e7e2469d8aece0d2.js",
+      "https://github.githubassets.com/assets/signup-b47bb666c71af4a7.js"
+    ],
+    "selectors": [],
+    "visibleSelectors": []
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "source": "https://www.scrapingcourse.com/cloudflare-challenge",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "https://www.scrapingcourse.com/cloudflare-challenge",
+    "title": "Just a moment...",
+    "text": "www.scrapingcourse.com\nPerforming security verification\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nRay ID: a5e2b51089baded0\nPerformance and Security by Cloudflare\nPrivacy",
+    "textLength": 270,
+    "frameUrls": [],
+    "scriptSrcs": [
+      "https://www.scrapingcourse.com/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1?ray=x",
+      "https://challenges.cloudflare.com/turnstile/v0/b/f8df4d4a0cd6/api.js?onload=x&render=explicit"
+    ],
+    "selectors": [],
+    "visibleSelectors": []
+  }
+}

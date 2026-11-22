@@ -1,0 +1,23 @@
+{
+  "source": "https://www.glassdoor.com/",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "https://www.glassdoor.com/",
+    "title": "Just a moment...",
+    "text": "Humans only\n\nGlassdoor has been built on the contributions of real employees and job seekers. We use advanced security systems to keep our site safe and prevent misuse or unauthorized access.\n\nIn rare cases, security protections may mistakenly block legitimate activity from real users. If you have been mistakenly blocked from accessing our site, please review our Help Center article for troubleshooting steps.\n\nRay ID: a5e2b59529f416d3\nTimestamp: 2026-11-21T21:15:21.809Z\nYour IP address: 203.0.113.7\nCloudflare Location: US\nRequested URL: https://www.glassdoor.com/?__cf_chl_rt_tk=x\nUser-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+    "textLength": 814,
+    "frameUrls": [],
+    "scriptSrcs": [
+      "https://s3.amazonaws.com/ki.js/67252/fQH.js",
+      "https://sb.scorecardresearch.com/beacon.js",
+      "https://www.googletagmanager.com/gtm.js?id=x&l=x",
+      "https://rscdn.glassdoor.com/3.29.0/legacy/rsa.min.js",
+      "https://www.glassdoor.com/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1?ray=x",
+      "https://challenges.cloudflare.com/turnstile/v0/b/f8df4d4a0cd6/api.js?onload=x&render=explicit",
+      "https://cdn.cookielaw.org/scripttemplates/202407.2.0/otBannerSdk.js",
+      "https://cdn.cookielaw.org/scripttemplates/otSDKStub.js"
+    ],
+    "selectors": [],
+    "visibleSelectors": []
+  }
+}

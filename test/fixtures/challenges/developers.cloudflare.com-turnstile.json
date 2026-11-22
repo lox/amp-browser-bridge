@@ -1,0 +1,31 @@
+{
+  "source": "https://developers.cloudflare.com/turnstile/",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "https://developers.cloudflare.com/turnstile/",
+    "title": "Overview · Cloudflare Turnstile docs",
+    "text": "Skip to content\nDocumentation Index\nFetch the complete documentation index at: https://developers.cloudflare.com/turnstile/llms.txt\nUse this file to discover all available pages before exploring further.\nDOCS\nDirectory\nAPI\nSDKs\nChangelog\nSearch\nCtrl\nK\nLog in\nHome\n/\nTurnstile\nCloudflare Turnstile\nLast updated\nAug 14, 2026\n|\nCopy as Markdown\n|\nView as Markdown\n|\nAgent setup\n\nCloudflare's smart CAPTCHA alternative.\n\nTurnstile can be embedded into any website without sending traffic through Cloudflare and works without showing visitors a CAPTCHA.\n\nCloudflare issues challenges through the Challenge Platform, which is the same underlying technology powering Turnstile.\n\nIn contrast to our Challenge page offerings, Turnstile allows you to run challenges anywhere on your site in a less-intrusive way without requiring the use of Cloudflare's CDN.\n\nHow Turnstile works\n\nTurnstile adapts the challenge outcome to the individual visitor or browser. First, we run a series of small non-interactive JavaScript challenges to gather signals about the visitor or browser environment.\n\nThese challenges include proof-of-work (computational puzzles), proof-of-space, probing for web APIs, and various other challenges for detecting browser-quirks and human behavior. As a result, we can fine-tune the difficulty of the challenge to the specific request and avoid showing a visual or interactive puzzle to a user.\n\nTurnstile performs client-side security challenges on behalf of the website operator to distinguish human visitors from automated traffic. To do so, Turnstile processes only the data strictly necessary to provide this security function. Turnstile does not access, store, or transmit user communications, form entries, or other page inputs.\n\nNote\n\nFor detailed information on Turnstile's data privacy practices, refer to the Turnstile Privacy Addendum ↗︎.\n\nWidget types\n\nTurnstile widget types include:\n\nManaged (recommended): Automatically decides whether to show a checkbox based on visitor risk level.\nNon-interactive: Visitors never need to interact with the widget.\nInvisible: The widget is completely hidden from the visitor.\nAccessibility\n\nTurnstile is WCAG 2.2 AA compliant.\n\nFeatures\nTurnstile Analytics\n\nAssess the number of challenges issued, evaluate the challenge solve rate, and view the metrics of issued challenges.\n\nUse Turnstile Analytics\nPre-clearance\n\nIntegrate Cloudflare challenges on single-page applications (SPAs) by allowing Turnstile to issue a Pre-Clearance cookie.\n\nUse Pre-clearance\nRelated products\nBots\n\nCloudflare bot solutions identify and mitigate automated traffic to protect your domain from bad bots.\n\nDDoS Protection\n\nDetect and mitigate Distributed Denial of Service (DDoS) attacks using Cloudflare's Autonomous Edge.\n\nWAF\n\nGet automatic protection from vulnerabilities and the flexibility to create custom rules.\n\nMore resources\nPlans\n\nLearn more about Turnstile's plan availability.\n\nNext\nPlans\nOn this page\nOverview\nHow Turnstile works\nWidget types\nAcc",
+    "textLength": 5379,
+    "frameUrls": [
+      "https://customer-1mwganm1ma0xgnmj.cloudflarestream.com/7f1104dc5895d96c1957a4db5fdf496a/iframe?preload=true&letterboxColor=x&poster=x"
+    ],
+    "scriptSrcs": [
+      "https://developers.cloudflare.com/_astro/page.CMFgH77u.js",
+      "https://ot.www.cloudflare.com/public/vendor/onetrust/scripttemplates/202503.1.0/otBannerSdk.js",
+      "https://ot.www.cloudflare.com/public/vendor/onetrust/scripttemplates/202503.1.0/otGPP.js",
+      "https://developers.cloudflare.com/_astro/Search.astro_astro_type_script_index_0_lang.DH3uW6MT.js",
+      "https://developers.cloudflare.com/_astro/ThemeToggle.astro_astro_type_script_index_0_lang.B55ahSi2.js",
+      "https://developers.cloudflare.com/_astro/PageActions.astro_astro_type_script_index_0_lang.FvPGI_qr.js",
+      "https://developers.cloudflare.com/_astro/MobileTOC.astro_astro_type_script_index_0_lang.BIN9jarj.js",
+      "https://embed.cloudflarestream.com/embed/sdk.latest.js",
+      "https://developers.cloudflare.com/_astro/TOC.astro_astro_type_script_index_0_lang.OmdN61M_.js",
+      "https://developers.cloudflare.com/_astro/Collapsible.astro_astro_type_script_index_0_lang.Bnwvqcds.js",
+      "https://developers.cloudflare.com/_astro/Sidebar.astro_astro_type_script_index_0_lang.BXDi-g_e.js",
+      "https://ot.www.cloudflare.com/public/vendor/onetrust/scripttemplates/otSDKStub.js",
+      "https://developers.cloudflare.com/_astro/BaseLayout.astro_astro_type_script_index_0_lang.B0ESC8cN.js",
+      "https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092"
+    ],
+    "selectors": [],
+    "visibleSelectors": []
+  }
+}

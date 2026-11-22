@@ -1,0 +1,23 @@
+{
+  "source": "https://accounts.hcaptcha.com/demo",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "https://accounts.hcaptcha.com/demo",
+    "title": "hCAPTCHA Demo",
+    "text": "?hl=XXX Use this to change hl JS API parameter.\n?sitekey=XXX Use this to change sitekey.\n?secret=XXX Use this to change siteverify secret.\n?sitekey=XXX&secret=XXX Use this to change both.\n\n\n\nSample Form with hCAPTCHA\nForm Field (optional)",
+    "textLength": 238,
+    "frameUrls": [
+      "https://newassets.hcaptcha.com/captcha/v1/7b6de2b378178a05e8aa25e42494ec5883aa37f6/static/hcaptcha.html",
+      "https://newassets.hcaptcha.com/captcha/v1/7b6de2b378178a05e8aa25e42494ec5883aa37f6/static/hcaptcha.html"
+    ],
+    "scriptSrcs": [
+      "https://js.hcaptcha.com/1/api.js?reportapi=x&custom=False&pstissuer=x"
+    ],
+    "selectors": [
+      ".h-captcha"
+    ],
+    "visibleSelectors": [
+      ".h-captcha"
+    ]
+  }
+}

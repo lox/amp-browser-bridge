@@ -1,0 +1,14 @@
+{
+  "source": "https://httpbin.org/status/403",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "chrome-error://chromewebdata/",
+    "title": "httpbin.org",
+    "text": "Access to httpbin.org was denied\n\nYou don't have authorization to view this page.\n\nHTTP ERROR 403\nReload",
+    "textLength": 104,
+    "frameUrls": [],
+    "scriptSrcs": [],
+    "selectors": [],
+    "visibleSelectors": []
+  }
+}

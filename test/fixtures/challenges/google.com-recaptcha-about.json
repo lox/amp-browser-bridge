@@ -1,0 +1,44 @@
+{
+  "source": "https://www.google.com/recaptcha/about/",
+  "captured": "2026-11-21",
+  "probe": {
+    "url": "https://cloud.google.com/security/products/recaptcha",
+    "title": "reCAPTCHA website security and fraud protection | Google Cloud",
+    "text": "reCAPTCHA: Part of Google Cloud Fraud Defense\nFeatures\nHow It Works\nCommon Uses\nBot protection\nAccount protection\nFake account protection\nSMS toll fraud protection\nTransaction protection\nGenerate a solution\nPricing\nBusiness Case\nFAQ\nLegacy Admin Console\nDocumentation\nBlogs\nCommunity\n\nStop getting blocked: Learn how Fraud Defense classifies legitimate agents and why builders should sign their traffic. Read the blog\n\nreCAPTCHA: Part of Google Cloud Fraud Defense\nStop automated attacks with modern bot protection\n\nSecure your web and mobile apps against sophisticated threats with a frictionless solution. reCAPTCHA provides the core visual challenge engine powering the expanded Google Cloud Fraud Defense platform.\n\nStart Fraud Defense\nFraud Defense Console\n\nStop advanced bots and agentic web threats. Discover Google Cloud Fraud Defense.\n\nProduct highlights\n\nFrictionless bot defense for web and mobile endpoints\n\nPowered by Google-scale intelligence to detect automated attacks\n\nThe core bot protection powering Google Cloud Fraud Defense\n\nProduct overview\n\nLearn reCAPTCHA in a minute\n\nFEATURES\n\nAdvanced bot and automated abuse detection\n\nreCAPTCHA leverages a sophisticated and adaptable risk analysis engine to shield against automated software, thwarting abusive activities within an organization’s website and mobile apps.\n\n42:55\n\nProtect against online account takeovers and fraudulent users\n\nreCAPTCHA provides the front-line bot defense to shield against automated credential stuffing. For comprehensive Account Defense that stops synthetic identities, account takeovers, and agentic abuse across the entire customer journey, take the next step with Google Cloud Fraud Defense.\n\nA defender’s guide to mitigating account takeover and bot-driven fraud\nDownload now\nBot mitigation with frictionless user experience\n\nSafeguards your website and mobile applications from abusive traffic without compromising the user experience. reCAPTCHA employs an invisible score-based detection mechanism to differentiate between legitimate users and bots or other malicious attacks.\n\nProtect your website from fraud and abuse with the reimagined reCAPTCHA\nRead the blog\nOnline scam protection against SMS toll fraud attacks\n\nStop high-velocity sign-up abuse and costly SMS pumping. SMS Defense is now included with the Google Cloud Fraud Defense platform.\n\nIntroducing reCAPTCHA SMS toll fraud protection, now in public preview\nRead the blog\nProtect against fraudulent transactions\n\nShield your checkout funnels from automated carding and promo abuse. Advanced Transaction Defense that evaluates risk signals across the payment process is available through Google Cloud Fraud Defense.\n\nLearn how a quick service restaurant is protecting against fraudulent transactions\nRead the blog\nView all features\n\nHOW IT WORKS\n\nreCAPTCHA is a powerful bot blocker that protects websites from spam, abuse, and fraud. It works by analyzing user behavior and other factors to determine if an action is being performe",
+    "textLength": 14501,
+    "frameUrls": [
+      "https://feedback-pa.clients6.google.com/static/proxy.html?usegapi=1&jsh=x"
+    ],
+    "scriptSrcs": [
+      "https://apis.google.com/_/scs/abc-static/_/js/k=gapi.lb.en.smUXTMp7CeY.O/m=client/rt=j/sv=1/d=1/ed=1/rs=AHpOoo_-UMASGI-dbLvJPxfO6N46l3l46A/cb=gapi.loaded_0?le=scs",
+      "https://www.googletagmanager.com/gtag/destination?id=x&cx=c&gtm=4e6bh1h1",
+      "https://www.googletagmanager.com/gtag/js?id=x&cx=c&gtm=4e6bh1h1",
+      "https://www.googletagmanager.com/gtag/js?id=x&cx=c&gtm=4e6bh1h1",
+      "https://www.googletagmanager.com/gtag/js?id=x&cx=c&gtm=4e6bh1h1",
+      "https://www.googletagmanager.com/gtag/js?id=x&cx=c&gtm=4e6bh1h1",
+      "https://www.googletagmanager.com/gtag/js?id=x&cx=c&gtm=4e6bh1h1",
+      "https://www.googletagmanager.com/gtag/js?id=x&cx=c&gtm=4e6bh1h1",
+      "https://www.googletagmanager.com/gtag/js?id=x&cx=c&gtm=4e6bh1h1",
+      "https://www.googletagmanager.com/gtag/js?id=x&cx=c&gtm=4e6bh1h1",
+      "https://www.googletagmanager.com/gtag/js?id=x&cx=c&gtm=4e6bh1h1",
+      "https://www.googletagmanager.com/gtm.js?id=x&gtm=4e6bh1h1",
+      "https://www.googletagmanager.com/gtm.js?id=x&gtm=4e6bh1h1",
+      "https://www.googletagmanager.com/gtm.js?id=x",
+      "https://www.gstatic.com/_/mss/boq-cloudx-web-cgc/_/js/k=boq-cloudx-web-cgc.GoogleCloudUxWebAppCgcUi.en_US.f8JgEF2NG5U.2018.O/am=YAAGAAAAAAAAECY/d=1/excm=_b,_tp,pageview/ed=1/dg=0/wt=2/ujg=1/rs=AF2DL4wClEZBNUYCjw9wMzmXmGSPc-Al8A/dti=1/m=_b,_tp",
+      "https://www.gstatic.com/og/_/js/k=og.qtm.en_US.wsVW4sr-DeU.2019.O/rt=j/m=qabr,q_dnp,qcwid,qapid,qads/exm=qaaw,qadd,qaid,qein,qhaw,qhba,qhbr,qhch,qhga,qhid,qhin/d=1/ed=1/rs=AA2YrTuShCT634N3Vd--ilRPe5C1mZ18hA",
+      "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/11082232239/?random=x&cv=11&fst=x&bg=ffffff&guid=ON&async=1&gtm=x&gcd=x&dma=0&tag_exp=x&u_w=800&u_h=600&url=x&rcb=13&frm=0&tiba=x&hn=x&npa=0&pscdl=noapi&auid=x&uaa=x86&uab=64&uafvl=x&uamb=0&uam=&uap=Linux&uapv=&uaw=0&_tu=CA&ept=9&rfmt=3&fmt=4",
+      "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/11082232239/?random=x&cv=11&fst=x&bg=ffffff&guid=ON&async=1&en=x&gtm=x&gcd=x&dma=0&tag_exp=x&u_w=800&u_h=600&url=x&rcb=13&frm=0&tiba=x&hn=x&npa=0&pscdl=noapi&auid=x&uaa=x86&uab=64&uafvl=x&uamb=0&uam=&uap=Linux&uapv=&uaw=0&data=x&ept=9&rfmt=3&fmt=4",
+      "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/10836211492/?random=x&cv=11&fst=x&bg=ffffff&guid=ON&async=1&gtm=x&gcd=x&dma=0&tag_exp=x&u_w=800&u_h=600&url=x&rcb=12&frm=0&tiba=x&hn=x&npa=0&pscdl=noapi&auid=x&uaa=x86&uab=64&uafvl=x&uamb=0&uam=&uap=Linux&uapv=&uaw=0&_tu=CA&ept=9&rfmt=3&fmt=4",
+      "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/10836211492/?random=x&cv=11&fst=x&bg=ffffff&guid=ON&async=1&en=x&gtm=x&gcd=x&dma=0&tag_exp=x&u_w=800&u_h=600&url=x&rcb=12&frm=0&tiba=x&hn=x&npa=0&pscdl=noapi&auid=x&uaa=x86&uab=64&uafvl=x&uamb=0&uam=&uap=Linux&uapv=&uaw=0&data=x&ept=9&rfmt=3&fmt=4",
+      "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/813545861/?random=x&cv=11&fst=x&bg=ffffff&guid=ON&async=1&en=x&gtm=x&gcd=x&dma=0&tag_exp=x&u_w=800&u_h=600&url=x&rcb=9&frm=0&tiba=x&hn=x&npa=0&pscdl=noapi&auid=x&uaa=x86&uab=64&uafvl=x&uamb=0&uam=&uap=Linux&uapv=&uaw=0&data=x&ept=9&rfmt=3&fmt=4",
+      "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/706705810/?random=x&cv=11&fst=x&bg=ffffff&guid=ON&async=1&en=x&gtm=x&gcd=x&dma=0&tag_exp=x&u_w=800&u_h=600&url=x&rcb=8&frm=0&tiba=x&hn=x&npa=0&pscdl=noapi&auid=x&uaa=x86&uab=64&uafvl=x&uamb=0&uam=&uap=Linux&uapv=&uaw=0&data=x&ept=9&rfmt=3&fmt=4",
+      "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/16568007915/?random=x&cv=11&fst=x&bg=ffffff&guid=ON&async=1&en=x&gtm=x&gcd=x&dma=0&tag_exp=x&u_w=800&u_h=600&url=x&rcb=4&frm=0&tiba=x&hn=x&npa=0&pscdl=noapi&auid=x&uaa=x86&uab=64&uafvl=x&uamb=0&uam=&uap=Linux&uapv=&uaw=0&data=x&ept=9&rfmt=3&fmt=4",
+      "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/16541431319/?random=x&cv=11&fst=x&bg=ffffff&guid=ON&async=1&gtm=x&gcd=x&dma=0&tag_exp=x&u_w=800&u_h=600&url=x&rcb=17&frm=0&tiba=x&hn=x&npa=0&pscdl=noapi&auid=x&uaa=x86&uab=64&uafvl=x&uamb=0&uam=&uap=Linux&uapv=&uaw=0&_tu=CA&ept=9&rfmt=3&fmt=4",
+      "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/16541431319/?random=x&cv=11&fst=x&bg=ffffff&guid=ON&async=1&en=x&gtm=x&gcd=x&dma=0&tag_exp=x&u_w=800&u_h=600&url=x&rcb=17&frm=0&tiba=x&hn=x&npa=0&pscdl=noapi&auid=x&uaa=x86&uab=64&uafvl=x&uamb=0&uam=&uap=Linux&uapv=&uaw=0&data=x&ept=9&rfmt=3&fmt=4",
+      "https://www.gstatic.com/feedback/js/help/prod/service/lazy.min.js",
+      "https://apis.google.com/js/client.js"
+    ],
+    "selectors": [],
+    "visibleSelectors": []
+  }
+}
