@@ -33,7 +33,7 @@ You'll need the [Amp macOS app](https://ampcode.com/docs/apps/mac) with **Run th
 
    New threads on your Mac and in orbs pick it up from your personal plugins repo.
 
-2. **Load the extension.** Chrome Web Store review is still pending, so load it unpacked for now. Download and unzip [`amp-browser-bridge-0.2.0.zip`](https://github.com/lox/amp-browser-bridge/releases/download/v0.2.0/amp-browser-bridge-0.2.0.zip) from the [v0.2.0 release](https://github.com/lox/amp-browser-bridge/releases/tag/v0.2.0). Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, select the unzipped folder, and pin the extension to Chrome's toolbar.
+2. **Load the extension.** Chrome Web Store review is still pending, so load it unpacked for now. Download and unzip `amp-browser-bridge-<version>.zip` from the [latest release](https://github.com/lox/amp-browser-bridge/releases/latest). Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, select the unzipped folder, and pin the extension to Chrome's toolbar.
 
    Installing opens the setup checklist (or click **Setup and status** in the popup).
 
@@ -99,7 +99,7 @@ Page tools take an optional `tab` ID from `browser_open_tab`, defaulting to the 
 
 Chrome blocks extensions on Chrome Web Store pages, so tools refuse them and navigating a lent tab there ends the lend.
 
-Changes merged since `v0.2.0` (frozen-tab unfreezing, download and Web Store handling, and closing unusable background tabs) require loading `extension/` from `main` until the next release.
+`main` can be ahead of the latest release. To try unreleased changes, load `extension/` from a checkout of `main`.
 
 ## Security
 
