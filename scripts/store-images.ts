@@ -12,7 +12,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { UNPACKED_ID } from '../plugin/extension-id'
-import { DEFAULT_PORT, startBridge, writePublished } from '../plugin/host'
+import { DEFAULT_PORT, signRequest, startBridge, writePublished } from '../plugin/host'
 
 const CHROME = process.env.CHROME
 if (!CHROME) throw new Error('Set CHROME to a Chromium or Chrome for Testing binary.')
@@ -26,12 +26,14 @@ const DEMO = 'https://app.example.com'
 const dir = mkdtempSync(join(tmpdir(), 'abb-store-'))
 writePublished(dir, { url: 'https://port-19989--k7q2m.onamp.dev', thread: THREAD, at: new Date().toISOString() })
 const bridge = startBridge({ dir, port: DEFAULT_PORT })
-const call = (tool: string, args: object = {}) =>
-  fetch(`http://127.0.0.1:${DEFAULT_PORT}/call`, {
+/** A request signed as the plugin signs it. */
+const post = (path: string, body = '') =>
+  fetch(`http://127.0.0.1:${DEFAULT_PORT}${path}`, {
     method: 'POST',
-    headers: { 'x-bridge-token': bridge.token, 'x-amp-thread': THREAD, 'content-type': 'application/json' },
-    body: JSON.stringify({ tool, args }),
-  }).then((r) => r.json())
+    headers: { 'x-bridge-auth': signRequest(bridge.token, { method: 'POST', path, thread: THREAD, body }).header, 'x-amp-thread': THREAD, 'content-type': 'application/json' },
+    body,
+  })
+const call = (tool: string, args: object = {}) => post('/call', JSON.stringify({ tool, args })).then((r) => r.json())
 
 // ---- Chrome, driven over the DevTools protocol ----
 
@@ -153,9 +155,7 @@ frames.push(['screenshot-2-handoff.png', frame({
   sub: 'Amp hands the tab back, sees nothing while you type, and waits for Continue.',
   url: 'app.example.com/login', tab: 'Sign in · Acme', badge: 'WAIT', page: await demo.shot(), popup: await popupShot('Amp is waiting for you'),
 })])
-await fetch(`http://127.0.0.1:${DEFAULT_PORT}/handoff/${handoff.result.handoff_id}/cancel`, {
-  method: 'POST', headers: { 'x-bridge-token': bridge.token, 'x-amp-thread': THREAD },
-})
+await post(`/handoff/${handoff.result.handoff_id}/cancel`)
 await visit('/issues')
 
 // The setup checklist, all green, then with the bridge gone.

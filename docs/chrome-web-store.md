@@ -31,8 +31,10 @@ version you upload includes that feature; otherwise leave them out.
    Upload `dist/amp-browser-bridge-<version>-no-key.zip`. Store uploads always drop the manifest
    `key`: the store keeps its own key, and an upload whose `key` doesn't match it is refused.
 4. **Add new item** in the dashboard and upload the zip. The store assigns the item its ID now, a
-   32-letter string shown under the item's name and in the dashboard's address bar. Note it for
-   [step 10](#after-approval).
+   32-letter string shown under the item's name and in the dashboard's address bar. Send it to Amp
+   and ask for a pull request that sets `STORE_ID` in `plugin/extension-id.ts`; merge it and update
+   the plugin before step 9. Until the bridge knows that ID it refuses the store build, so the
+   store's reviewer couldn't pair it.
 5. **Store listing** tab: paste [the listing text](#store-listing), set the category and language,
    and upload the images from [`docs/store/`](store/): `icon-128.png` as the store icon, the four
    `screenshot-*.png` in their numbered order, and `promo-small-440x280.png` as the small promo
@@ -49,9 +51,8 @@ version you upload includes that feature; otherwise leave them out.
 
 ### After approval
 
-10. **Publish**, then send Amp the store ID and ask for the switch-over pull request described in
-    [Moving to the store's ID](#moving-to-the-stores-id): `STORE_ID` in `plugin/extension-id.ts`
-    and the README's install step. Merge it once the listing is live.
+10. **Publish**, then ask Amp to point the README's install step at the listing, as described in
+    [Moving to the store's ID](#moving-to-the-stores-id). Merge it once the listing is live.
 11. Tell people on the unpacked build how to move, using the steps in the same section.
 
 ## Moving to the store's ID
@@ -107,9 +108,9 @@ build's setup page (popup → **Setup and status**).
 
 ## Store listing
 
-- **Name** and **summary** come from the package: *Amp Browser Bridge* and *Lend one Chrome tab to
-  your Amp threads. They read it, take screenshots and, with your approval, click and type.* (112
-  of 132 characters; edit `description` in `extension/manifest.json` to change it.)
+- **Name** and **summary** come from the package: *Amp Browser Bridge* and *Lend a Chrome tab to your Amp threads, or let them open their own. They read pages and, with your approval, click and type.*
+  (123 of 132 characters; edit `description` in `extension/manifest.json` to change it, and
+  `bun run release` refuses a longer one.)
 - **Category:** Developer Tools
 - **Language:** English
 - **Homepage URL:** https://github.com/lox/amp-browser-bridge
@@ -224,7 +225,7 @@ The extension talks only to a bridge on 127.0.0.1:19989. To try it without Amp:
 2. Install the extension. Its setup page opens and shows the bridge as found. Enter the code from ~/.amp-browser-bridge/pairing-code and click Pair.
 3. Open any web page, click the extension's toolbar icon, and click "Lend this tab".
 4. Read the page as an Amp thread would (any thread ID of this shape works):
-   curl -s -X POST http://127.0.0.1:19989/call -H "x-bridge-token: $(cat ~/.amp-browser-bridge/token)" -H "x-amp-thread: T-00000000-0000-0000-0000-000000000000" -d '{"tool":"snapshot"}'
-   Other tools: {"tool":"screenshot"}, and, after ticking "Allow clicks, typing and navigation" in the popup, {"tool":"click","args":{"ref":"e1"}} with a ref from the snapshot.
-5. Hand the tab to the user: -d '{"tool":"handoff","args":{"message":"Sign in, then click Continue"}}'. A card appears on the page; Continue ends it.
+   bun scripts/call.ts snapshot
+   Requests to the bridge are signed with the token in ~/.amp-browser-bridge/token; scripts/call.ts does that. Other tools: bun scripts/call.ts screenshot, and, after ticking "Allow clicks, typing and navigation" in the popup, bun scripts/call.ts click '{"ref":"e1"}' with a ref from the snapshot.
+5. Hand the tab to the user: bun scripts/call.ts handoff '{"message":"Sign in, then click Continue"}'. A card appears on the page; Continue ends it.
 ```
