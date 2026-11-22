@@ -55,10 +55,13 @@ minutes and no terminal.
 
    It lands in your User Plugins repository, so new threads on your Mac and in your orbs get it.
 
-2. **Load the extension.** [Download this repository](https://github.com/lox/amp-browser-bridge/archive/refs/heads/main.zip)
-   and unzip it. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**,
-   and pick the `extension` folder. Pin the extension from Chrome's puzzle-piece menu. It always
-   gets the ID `goknnphohomgekkahpdiphdfladfnmoc`.
+2. **Load the extension.** The extension is a developer preview that you load unpacked. Download
+   [`amp-browser-bridge-0.2.0.zip`](https://github.com/lox/amp-browser-bridge/releases/download/v0.2.0/amp-browser-bridge-0.2.0.zip)
+   from the [v0.2.0 release](https://github.com/lox/amp-browser-bridge/releases/tag/v0.2.0)
+   (sha256 `64bcdcb5e14925b9e15aaace5180ff4ca3896e11baa221a34d278256a6c32880`) and unzip it.
+   Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and pick the
+   unzipped folder. Pin the extension from Chrome's puzzle-piece menu. It always gets the ID
+   `goknnphohomgekkahpdiphdfladfnmoc`.
 
    Chrome opens a setup page that follows the remaining steps live and says what to do at any
    step that fails. Reopen it any time from the popup's **Setup and status** link.
