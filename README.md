@@ -105,8 +105,8 @@ last used, inside a collapsed green **Amp** group.
 - Lending one of Amp's tabs makes it yours: it gets the lent tab's limits. Cancel on Chrome's
   "started debugging" bar also takes them back, leaving them open.
 
-If a dialog, banner or overlay covers what the agent wants to click, the click is refused rather
-than hitting whatever is on top.
+If a dialog, banner or overlay covers what the agent wants to click, type into, press a key on or
+select in, the action is refused rather than hitting whatever is on top.
 
 ## Troubleshooting
 
@@ -137,10 +137,14 @@ The common cases:
 | --- | --- |
 | `browser_status` | Connection, lent tab, who holds it, whether this thread's last handoff is still waiting or you clicked **Continue**, and what to do next |
 | `browser_open_tab`, `browser_close_tab` | Open a background tab of the thread's own, after your approval, and close it |
-| `browser_snapshot` | Accessibility outline with refs (`e12`) for click and type |
+| `browser_snapshot` | Accessibility outline with refs (`e12`) for the action tools |
 | `browser_screenshot` | JPEG of the viewport |
+| `browser_wait_for` | Wait (up to 20 seconds) for text, a URL or an element by role and name to appear |
 | `browser_scroll` | Scroll by a number of pixels |
 | `browser_click`, `browser_type`, `browser_navigate` | Act on the page, after your approval |
+| `browser_fill` | Like `browser_type`, but hides the value of password and one-time-code fields in the approval prompt and the result |
+| `browser_press` | Press a key such as Enter, Escape or Tab, on a ref or on whatever has focus, after your approval |
+| `browser_select` | Choose an option of a `<select>` by value or label, after your approval |
 | `browser_handoff` | Hand the tab to you and wait for **Continue** (up to 30 minutes). If a call is lost while the card is up, calling it again waits for the same card |
 | `browser_bridge_pair` | On the Mac only: open the setup page with a new one-time pairing code |
 | `browser_bridge_publish` | On the Mac only: expose the bridge to your orbs; it republishes itself on every start |
@@ -187,7 +191,9 @@ an email can try to steer it.
 - **Refs.** They expire when the page changes, and an element is checked against the snapshot's
   role and name before each action. If the page moves focus while text is typed, the result is
   reported as unknown.
-- **What it sees.** Snapshots leave out what's typed in fields. Screenshots show the page as it is.
+- **What it sees.** Snapshots and `browser_wait_for` leave out what's typed in fields. Screenshots
+  show the page as it is. `browser_fill` hides what goes into password and one-time-code fields
+  from the approval prompt and its result, but the agent chose the value, so it still knows it.
 - **The card.** A page can't press **Continue** for you, but it can hide the card; use the popup's
   **Continue** button then.
 - **Limits.** The site limit covers navigation, not requests the page makes itself. If an answer

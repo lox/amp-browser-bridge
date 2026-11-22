@@ -5,8 +5,10 @@
 // own tabs are recorded in chrome.storage.local, so they stay Amp's across a reload of the extension.
 const BRIDGE = "ws://127.0.0.1:19989/ext";
 const SNAPSHOT_LIMIT = 120_000;
-const MUTATING = new Set(["click", "type", "navigate"]);
-const EDITABLE = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
+const MUTATING = new Set(["click", "type", "fill", "press", "select", "navigate"]);
+// A <select> is a combobox too, but it holds options, not typed text; text comboboxes are editable.
+const EDITABLE = new Set(["textbox", "searchbox", "spinbutton"]);
+const WAIT_LIMIT_MS = 20_000;
 /** Amp's own tabs close after this long without a command. */
 const AGENT_TAB_IDLE_MS = 10 * 60_000;
 
@@ -327,8 +329,12 @@ async function execute(lend, tool, args, effects) {
     case "describe": return describe(target, lend, tab, args.ref);
     case "screenshot": return screenshot(target, lend);
     case "scroll": return scroll(target, Number(args.delta_y), effects);
+    case "wait_for": return waitFor(target, lend, args);
     case "click": return click(target, lend, args.ref, effects);
     case "type": return type(target, lend, args.ref, String(args.text ?? ""), args.submit === true, effects);
+    case "fill": return fill(target, lend, args.ref, String(args.value ?? ""), args.submit === true, args.secret === true, effects);
+    case "press": return press(target, lend, args.ref, args.key, args.doc, args.url, args.focused, effects);
+    case "select": return select(target, lend, args.ref, String(args.value ?? ""), effects);
     case "navigate": return navigate(target, lend, args.url, effects);
     default: throw new Error(`Unknown tool: ${tool}`);
   }
@@ -356,40 +362,22 @@ async function documentID(target, lend) {
 const SKIP = new Set(["none", "generic", "InlineTextBox", "LineBreak"]);
 const INTERACTIVE = new Set(["button", "link", "textbox", "searchbox", "combobox", "checkbox", "radio", "switch", "menuitem", "tab", "option", "slider", "spinbutton", "listbox", "menuitemcheckbox", "menuitemradio", "treeitem"]);
 
-async function snapshot(target, lend, tab) {
-  const doc = await documentID(target, lend);
-  const {nodes} = await cdp(target, "Accessibility.getFullAXTree");
+/**
+ * Calls visit(node, role, name, depth) for each accessibility node a snapshot shows, never inside
+ * fields: their text is what the user typed. Stops when visit returns false.
+ */
+function walkTree(nodes, visit) {
   const byID = new Map(nodes.map((n) => [n.nodeId, n]));
-  const refs = {};
-  let count = 0;
-  const lines = [];
-  let size = 0;
-  let truncated = false;
+  let stopped = false;
   const walk = (node, depth) => {
-    if (truncated) return;
+    if (stopped) return;
     const role = node.role?.value || "";
-    const name = (node.name?.value || "").replace(/\s+/g, " ").trim().slice(0, 200);
+    const name = (node.name?.value || "").replace(/\s+/g, " ").trim();
     const shown = !node.ignored && !SKIP.has(role) && !(role === "StaticText" && !name);
-    if (shown) {
-      let line = "  ".repeat(depth);
-      if (node.backendDOMNodeId && (INTERACTIVE.has(role) || node.focusable)) {
-        const ref = `e${++count}`;
-        refs[ref] = {backendNodeId: node.backendDOMNodeId, role, name: node.name?.value || ""};
-        line += `[${ref}] `;
-      }
-      line += role === "StaticText" ? JSON.stringify(name) : `${role}${name ? ` ${JSON.stringify(name)}` : ""}`;
-      // Snapshots leave out what's typed in fields; the agent sees the field, not its contents.
-      for (const p of node.properties || []) {
-        if (["checked", "disabled", "expanded", "selected"].includes(p.name) && p.value?.value) line += ` (${p.name})`;
-      }
-      size += line.length + 1;
-      if (size > SNAPSHOT_LIMIT) {
-        truncated = true;
-        return;
-      }
-      lines.push(line);
+    if (shown && visit(node, role, name, depth) === false) {
+      stopped = true;
+      return;
     }
-    // Don't descend into fields: their text children are what the user typed.
     if (EDITABLE.has(role) || node.properties?.some((p) => p.name === "editable" && p.value?.value)) return;
     for (const id of node.childIds || []) {
       const child = byID.get(id);
@@ -398,6 +386,36 @@ async function snapshot(target, lend, tab) {
   };
   const root = nodes.find((n) => !n.parentId);
   if (root) walk(root, 0);
+}
+
+async function snapshot(target, lend, tab) {
+  const doc = await documentID(target, lend);
+  const {nodes} = await cdp(target, "Accessibility.getFullAXTree");
+  const refs = {};
+  let count = 0;
+  const lines = [];
+  let size = 0;
+  let truncated = false;
+  walkTree(nodes, (node, role, name, depth) => {
+    let line = "  ".repeat(depth);
+    if (node.backendDOMNodeId && (INTERACTIVE.has(role) || node.focusable)) {
+      const ref = `e${++count}`;
+      refs[ref] = {backendNodeId: node.backendDOMNodeId, role, name: node.name?.value || ""};
+      line += `[${ref}] `;
+    }
+    name = name.slice(0, 200);
+    line += role === "StaticText" ? JSON.stringify(name) : `${role}${name ? ` ${JSON.stringify(name)}` : ""}`;
+    // Snapshots leave out what's typed in fields; the agent sees the field, not its contents.
+    for (const p of node.properties || []) {
+      if (["checked", "disabled", "expanded", "selected"].includes(p.name) && p.value?.value) line += ` (${p.name})`;
+    }
+    size += line.length + 1;
+    if (size > SNAPSHOT_LIMIT) {
+      truncated = true;
+      return false;
+    }
+    lines.push(line);
+  });
   // The origin was checked before the read; a navigation during it would mix in another page.
   if (await documentID(target, lend) !== doc) throw new Error("The page navigated while it was read. Take a new snapshot.");
   await session.set(`refs:${target.tabId}`, {doc, refs});
@@ -419,38 +437,80 @@ async function resolveRef(target, lend, ref) {
   return entry;
 }
 
-/** Runs `fn` on a node in an isolated world, where the page's own overrides (of focus, contains, ...) don't apply. */
-async function isolated(target, backendNodeId, fn, otherBackendNodeId) {
+/**
+ * Runs `fn` on a node in an isolated world, where the page's own overrides (of focus, contains, ...)
+ * don't apply. `arg` is passed to `fn`: another node as {node: backendNodeId}, or {value}.
+ */
+async function isolated(target, backendNodeId, fn, arg) {
   const {frameTree} = await cdp(target, "Page.getFrameTree");
   const {executionContextId} = await cdp(target, "Page.createIsolatedWorld", {frameId: frameTree.frame.id, worldName: "amp-browser-bridge"});
   const {object} = await cdp(target, "DOM.resolveNode", {backendNodeId, executionContextId});
   const args = [];
-  if (otherBackendNodeId) args.push({objectId: (await cdp(target, "DOM.resolveNode", {backendNodeId: otherBackendNodeId, executionContextId})).object.objectId});
+  if (arg?.node) args.push({objectId: (await cdp(target, "DOM.resolveNode", {backendNodeId: arg.node, executionContextId})).object.objectId});
+  else if (arg) args.push({value: arg.value});
   const {result} = await cdp(target, "Runtime.callFunctionOn", {objectId: object.objectId, functionDeclaration: fn.toString(), arguments: args, returnByValue: true});
   return result.value;
 }
 
-async function describe(target, lend, tab, ref) {
-  const entry = await resolveRef(target, lend, ref);
-  return {ref, role: entry.role, name: entry.name, url: tab.url};
+/** Whether a node is a password or one-time-code field, whose value the fill tool hides. */
+function isSecret() {
+  const tokens = (this.getAttribute?.("autocomplete") || "").toLowerCase().split(/\s+/);
+  return (this instanceof HTMLInputElement && this.type === "password") || ["one-time-code", "current-password", "new-password"].some((t) => tokens.includes(t));
 }
 
-async function click(target, lend, ref, effects) {
-  const {backendNodeId} = await resolveRef(target, lend, ref);
+async function describe(target, lend, tab, ref) {
+  // Without a ref (a key pressed on whatever has focus) the page is all there is to describe; its
+  // document ID lets press refuse a key approved for a page that has since navigated.
+  if (!ref) {
+    // URL and document ID from one read, so the site approved is the page the key goes to.
+    const {frameTree} = await cdp(target, "Page.getFrameTree");
+    if (!lend.anyOrigin && originOf(frameTree.frame.url) !== lend.origin) {
+      throw new Error(`The tab has left ${lend.origin}, the site it was lent on. Ask the user to go back or to allow other sites.`);
+    }
+    return {url: frameTree.frame.url, doc: frameTree.frame.loaderId, focused: await focusedNode(target, frameTree)};
+  }
+  const entry = await resolveRef(target, lend, ref);
+  return {ref, role: entry.role, name: entry.name, url: tab.url, secret: await isolated(target, entry.backendNodeId, isSecret)};
+}
+
+/**
+ * Scrolls a node into view and returns its centre. Input lands on whatever is on top there, so
+ * refuse unless that is the node itself (or something inside it): an overlay never receives an
+ * action approved for something else, and nothing acts on an element the user can't see.
+ */
+async function uncovered(target, backendNodeId, ref) {
   await cdp(target, "DOM.scrollIntoViewIfNeeded", {backendNodeId});
   const {model} = await cdp(target, "DOM.getBoxModel", {backendNodeId});
   const q = model.content;
   const x = (q[0] + q[2] + q[4] + q[6]) / 4;
   const y = (q[1] + q[3] + q[5] + q[7]) / 4;
-  // A click lands on whatever is on top at that point. Refuse unless that is the element itself
-  // (or something inside it), so an overlay never receives a click approved for something else.
   const hit = await cdp(target, "DOM.getNodeForLocation", {x: Math.round(x), y: Math.round(y), includeUserAgentShadowDOM: false, ignorePointerEventsNone: false});
   const inside = await isolated(target, backendNodeId, function (h) {
     for (let n = h; n; n = n.parentNode || n.host) if (n === this) return true;
     // Custom checkboxes and switches hide the input under its label; the browser forwards that click.
     return h.closest?.("label")?.control === this;
-  }, hit.backendNodeId);
+  }, {node: hit.backendNodeId});
   if (!inside) throw new Error(`Something else covers ${ref} (a dialog or banner?). Take a new snapshot.`);
+  return {x, y};
+}
+
+/** The backend node ID of the element with focus (inside shadow roots too), read in an isolated world. */
+async function focusedNode(target, frameTree) {
+  const {executionContextId} = await cdp(target, "Page.createIsolatedWorld", {frameId: frameTree.frame.id, worldName: "amp-browser-bridge"});
+  const {result} = await cdp(target, "Runtime.evaluate", {contextId: executionContextId, expression: "(() => { let a = document.activeElement; while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement; return a; })()"});
+  if (!result.objectId) return 0;
+  return (await cdp(target, "DOM.describeNode", {objectId: result.objectId})).node.backendNodeId;
+}
+
+function hasFocus() {
+  let active = document.activeElement;
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+  return active === this;
+}
+
+async function click(target, lend, ref, effects) {
+  const {backendNodeId} = await resolveRef(target, lend, ref);
+  const {x, y} = await uncovered(target, backendNodeId, ref);
   effects.sent = true;
   for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
     await cdp(target, "Input.dispatchMouseEvent", {type, x, y, button: type === "mouseMoved" ? "none" : "left", clickCount: 1});
@@ -458,11 +518,14 @@ async function click(target, lend, ref, effects) {
   return {clicked: ref};
 }
 
-async function type(target, lend, ref, text, submit, effects) {
+/** Replaces a field's contents; browser_type and browser_fill differ only in what they report. */
+async function replaceText(target, lend, ref, text, effects) {
   const {backendNodeId} = await resolveRef(target, lend, ref);
-  await cdp(target, "DOM.scrollIntoViewIfNeeded", {backendNodeId});
+  await uncovered(target, backendNodeId, ref);
   // Focus and select in an isolated world, without bringing the tab to the front, and check that
   // the field really has focus: the page can't redirect it there, but its own handlers could.
+  // focus() runs the page's own handlers, so from here a failure leaves the outcome unknown.
+  effects.sent = true;
   const focused = await isolated(target, backendNodeId, function () {
     this.focus();
     if (typeof this.select === "function") this.select();
@@ -477,20 +540,164 @@ async function type(target, lend, ref, text, submit, effects) {
     return active === this;
   });
   if (!focused) throw new Error(`${ref} did not take focus. Take a new snapshot.`);
-  effects.sent = true;
   await cdp(target, "Input.insertText", {text});
   // The page could still move focus between the check and the insert; then the outcome is unknown.
-  const stillFocused = await isolated(target, backendNodeId, function () {
-    let active = document.activeElement;
-    while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
-    return active === this;
-  });
-  if (!stillFocused) throw new Error(`Focus moved away from ${ref} while typing; check where the text went.`);
-  if (submit) {
-    await cdp(target, "Input.dispatchKeyEvent", {type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r"});
-    await cdp(target, "Input.dispatchKeyEvent", {type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13});
-  }
+  if (!await isolated(target, backendNodeId, hasFocus)) throw new Error(`Focus moved away from ${ref} while typing; check where the text went.`);
+  return backendNodeId;
+}
+
+async function type(target, lend, ref, text, submit, effects) {
+  await replaceText(target, lend, ref, text, effects);
+  if (submit) await sendKey(target, parseKey("Enter"));
   return {typed: ref, submitted: submit};
+}
+
+async function fill(target, lend, ref, value, submit, approvedSecret, effects) {
+  // Checked before the value goes in too, so a page that turns a password field into a text field
+  // as you type can't make the result show it.
+  // approvedSecret: the approval prompt hid the value, so the result does too, even if the user
+  // has since shown the password.
+  const before = approvedSecret || await isolated(target, (await resolveRef(target, lend, ref)).backendNodeId, isSecret);
+  const backendNodeId = await replaceText(target, lend, ref, value, effects);
+  const secret = before || await isolated(target, backendNodeId, isSecret);
+  // Enter last: a submit can navigate, and then the field is gone.
+  if (submit) await sendKey(target, parseKey("Enter"));
+  return {filled: ref, value: secret ? `(hidden: ${[...value].length} characters)` : value.slice(0, 80), submitted: submit};
+}
+
+const NAMED_KEYS = {
+  Enter: [13, "\r"], Tab: [9], Escape: [27], Backspace: [8], Delete: [46], Space: [32, " "],
+  ArrowUp: [38], ArrowDown: [40], ArrowLeft: [37], ArrowRight: [39], Home: [36], End: [35], PageUp: [33], PageDown: [34],
+};
+const MODIFIERS = {Alt: 1, Control: 2, Meta: 4, Shift: 8};
+
+/** "Enter", "Shift+Tab", "Control+a" or "x" as CDP key event fields. */
+function parseKey(raw) {
+  const parts = String(raw ?? "").split("+");
+  let key = parts.pop();
+  if (key === "" && parts.at(-1) === "") key = parts.pop() + "+";
+  if (key === " ") key = "Space";
+  let modifiers = 0;
+  for (const m of parts) {
+    if (!MODIFIERS[m]) throw new Error(`Unknown modifier ${m}. Use Shift, Control, Alt or Meta.`);
+    modifiers |= MODIFIERS[m];
+  }
+  let event;
+  if (NAMED_KEYS[key]) {
+    const [code, text] = NAMED_KEYS[key];
+    event = {key: key === "Space" ? " " : key, code: key, windowsVirtualKeyCode: code, text};
+  } else if ([...key].length === 1 && key > " ") {
+    const upper = key.toUpperCase();
+    // One ASCII letter: ß upper-cases to "SS", which is two keys, not one.
+    const letter = /^[A-Z]$/.test(upper);
+    const digit = /^[0-9]$/.test(key);
+    if (modifiers & MODIFIERS.Shift && !letter) throw new Error(`Shift+${key} depends on the keyboard layout. Pass the character it should type instead, such as ! for Shift+1.`);
+    const code = letter ? `Key${upper}` : digit ? `Digit${key}` : "";
+    const shown = modifiers & MODIFIERS.Shift ? upper : key;
+    event = {key: shown, code, windowsVirtualKeyCode: letter || digit ? upper.charCodeAt(0) : 0, text: shown};
+  } else {
+    throw new Error(`Unknown key ${JSON.stringify(String(raw ?? ""))}. Use a name such as Enter, Escape, Tab, Backspace, ArrowDown or PageDown, or one character, optionally after Shift+, Control+, Alt+ or Meta+.`);
+  }
+  // Shortcuts send no text: Control+a selects, it doesn't type an "a".
+  if (modifiers & (MODIFIERS.Alt | MODIFIERS.Control | MODIFIERS.Meta)) delete event.text;
+  return {...event, modifiers};
+}
+
+async function sendKey(target, event) {
+  await cdp(target, "Input.dispatchKeyEvent", {...event, type: event.text ? "keyDown" : "rawKeyDown"});
+  const {text, ...up} = event;
+  await cdp(target, "Input.dispatchKeyEvent", {...up, type: "keyUp"});
+}
+
+async function press(target, lend, ref, key, doc, url, focused, effects) {
+  const event = parseKey(key);
+  if (!ref && doc != null) {
+    // Document and URL from one read: an in-page route change keeps the document but not the URL.
+    // And the same element must still have focus: a dialog may have taken it while the user decided.
+    const {frameTree} = await cdp(target, "Page.getFrameTree");
+    if (frameTree.frame.loaderId !== doc || frameTree.frame.url !== url || await focusedNode(target, frameTree) !== focused) throw new Error("The page changed since this key press was approved, so no key was pressed. Take a new snapshot.");
+  }
+  if (ref) {
+    const {backendNodeId} = await resolveRef(target, lend, ref);
+    await uncovered(target, backendNodeId, ref);
+    // focus() runs the page's own handlers, so from here a failure leaves the outcome unknown.
+    effects.sent = true;
+    if (!await isolated(target, backendNodeId, function () {
+      this.focus();
+      let active = document.activeElement;
+      while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+      return active === this;
+    })) throw new Error(`${ref} did not take focus, so no key was pressed. Take a new snapshot.`);
+  }
+  effects.sent = true;
+  await sendKey(target, event);
+  return {pressed: key, ...(ref ? {ref} : {})};
+}
+
+async function select(target, lend, ref, value, effects) {
+  const {backendNodeId} = await resolveRef(target, lend, ref);
+  await uncovered(target, backendNodeId, ref);
+  // Matched, checked and changed in one step in the page, so it can't disable the option in between.
+  // Set as a person would pick it: the page hears input and change, and like a plain click only this
+  // option stays selected, in a multi-select too.
+  effects.sent = true;
+  const found = await isolated(target, backendNodeId, function (wanted) {
+    if (!(this instanceof HTMLSelectElement)) return {error: "is not a <select>. For a custom dropdown, click it, then click the option"};
+    if (this.disabled) return {error: "is disabled"};
+    const norm = (s) => s.replace(/\s+/g, " ").trim();
+    const options = [...this.options];
+    const option = options.find((o) => o.value === wanted) || options.find((o) => norm(o.label) === norm(wanted)) ||
+      options.find((o) => norm(o.label).toLowerCase() === norm(wanted).toLowerCase());
+    if (!option) return {error: `has no option ${JSON.stringify(wanted)}. Its options: ${options.slice(0, 50).map((o) => JSON.stringify(norm(o.label))).join(", ")}`};
+    if (option.disabled || option.parentElement?.disabled) return {error: `has option ${JSON.stringify(norm(option.label))} disabled`};
+    this.selectedIndex = option.index;
+    this.dispatchEvent(new Event("input", {bubbles: true, composed: true}));
+    this.dispatchEvent(new Event("change", {bubbles: true}));
+    return {value: option.value, label: norm(option.label)};
+  }, {value});
+  if (found.error) {
+    // Refused before anything changed.
+    effects.sent = false;
+    throw new Error(`${ref} ${found.error}.`);
+  }
+  return {selected: ref, value: found.value, label: found.label};
+}
+
+/** Waits until every given condition holds: text on the page, a URL substring, an element by role and name. */
+async function waitFor(target, lend, args) {
+  const norm = (s) => String(s).replace(/\s+/g, " ").trim().toLowerCase();
+  const text = args.text == null ? "" : norm(args.text);
+  const url = args.url == null ? "" : String(args.url);
+  const role = args.role == null ? "" : String(args.role);
+  const name = args.name == null ? "" : norm(args.name);
+  if (!text && !url && !role) throw new Error("wait_for needs text, url or role.");
+  if (name && !role) throw new Error("name needs a role, such as button or heading.");
+  const limit = Math.min(Math.max(Number(args.timeout_ms ?? 10_000) || 0, 0), WAIT_LIMIT_MS);
+  const started = Date.now();
+  const wanted = [text && `text ${JSON.stringify(args.text)}`, url && `a URL containing ${JSON.stringify(url)}`, role && `${role}${name ? ` ${JSON.stringify(args.name)}` : ""}`].filter(Boolean).join(" and ");
+  for (;;) {
+    // Refuses once the tab leaves the lent site, like every other read.
+    const doc = await documentID(target, lend);
+    const current = (await chrome.tabs.get(target.tabId)).url || "";
+    let met = !url || current.includes(url);
+    if (met && (text || role)) {
+      // Read the page as a snapshot does, so a wait never finds what's typed in a field.
+      const {nodes} = await cdp(target, "Accessibility.getFullAXTree").catch(() => ({nodes: []}));
+      let seen = "";
+      let found = !role;
+      walkTree(nodes, (node, r, n) => {
+        if (text) seen += ` ${n.toLowerCase()}`;
+        if (!found && r === role && (!name || n.toLowerCase().includes(name))) found = true;
+      });
+      met = found && (!text || seen.replace(/\s+/g, " ").includes(text));
+    }
+    // Every condition must hold on one document: if the page moved during the read, read again.
+    if (met && (await documentID(target, lend) !== doc || ((await chrome.tabs.get(target.tabId)).url || "") !== current)) met = false;
+    const waited = Date.now() - started;
+    if (met) return {matched: wanted, waited_ms: waited, url: current};
+    if (waited >= limit) throw new Error(`Timed out after ${Math.round(limit / 1000)}s waiting for ${wanted}. The tab is at ${current}.`);
+    await new Promise((resolve) => setTimeout(resolve, Math.min(250, limit - waited)));
+  }
 }
 
 async function navigate(target, lend, raw, effects) {
