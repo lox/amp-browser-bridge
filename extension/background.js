@@ -580,10 +580,13 @@ function parseKey(raw) {
     event = {key: key === "Space" ? " " : key, code: key, windowsVirtualKeyCode: code, text};
   } else if ([...key].length === 1 && key > " ") {
     const upper = key.toUpperCase();
-    if (modifiers & MODIFIERS.Shift && !/[A-Z]/.test(upper)) throw new Error(`Shift+${key} depends on the keyboard layout. Pass the character it should type instead, such as ! for Shift+1.`);
-    const code = /[A-Z]/.test(upper) ? `Key${upper}` : /[0-9]/.test(key) ? `Digit${key}` : "";
+    // One ASCII letter: ß upper-cases to "SS", which is two keys, not one.
+    const letter = /^[A-Z]$/.test(upper);
+    const digit = /^[0-9]$/.test(key);
+    if (modifiers & MODIFIERS.Shift && !letter) throw new Error(`Shift+${key} depends on the keyboard layout. Pass the character it should type instead, such as ! for Shift+1.`);
+    const code = letter ? `Key${upper}` : digit ? `Digit${key}` : "";
     const shown = modifiers & MODIFIERS.Shift ? upper : key;
-    event = {key: shown, code, windowsVirtualKeyCode: /[A-Z0-9]/.test(upper) ? upper.charCodeAt(0) : 0, text: shown};
+    event = {key: shown, code, windowsVirtualKeyCode: letter || digit ? upper.charCodeAt(0) : 0, text: shown};
   } else {
     throw new Error(`Unknown key ${JSON.stringify(String(raw ?? ""))}. Use a name such as Enter, Escape, Tab, Backspace, ArrowDown or PageDown, or one character, optionally after Shift+, Control+, Alt+ or Meta+.`);
   }
