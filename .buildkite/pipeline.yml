@@ -1,6 +1,6 @@
-# Runs `bun run check` and the headless-Chrome end-to-end tests (test/e2e). node:24 rather than
-# oven/bun, because oven/bun's `node` is Bun, and `node --check` would then run
-# extension/background.js instead of only parsing it.
+# Runs `bun run check` and the end-to-end tests (test/e2e) in a headed Chromium under Xvfb; the
+# portal script skips itself outside an Amp orb. node:24 rather than oven/bun, because oven/bun's
+# `node` is Bun, and `node --check` would then run extension/background.js instead of only parsing it.
 agents:
   queue: default
 
@@ -25,7 +25,7 @@ steps:
     command:
       - npm install -g bun@1.4
       - apt-get update -qq
-      - DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends chromium
+      - DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends chromium xvfb
       - bun install --frozen-lockfile
       - CHROME_BIN=/usr/bin/chromium bun run e2e
     timeout_in_minutes: 15

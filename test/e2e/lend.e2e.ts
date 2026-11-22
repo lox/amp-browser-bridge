@@ -1,15 +1,15 @@
 // A lend from start to finish, driven over the bridge's HTTP API as two threads: pairing, read-only,
 // the lease, a worker restart, click and type, overlays, the site limit, stale refs and a handoff.
-import { PAGE, api, call, cdp, check, done, evaluate, pageTarget, message, pair, restartWorker, trustedClick, until, wakeWorker } from './lib'
+import { PAGE, api, call, cdp, check, done, evaluate, pageTarget, message, pair, refOf, restartWorker, trustedClick, until, wakeWorker, showTab } from './lib'
 
 const A = 'T-00000000-0000-0000-0000-00000000000a', B = 'T-00000000-0000-0000-0000-00000000000b'
-const refOf = (s: any, pattern: RegExp) => s.outline.split('\n').find((l: string) => pattern.test(l))?.match(/\[(e\d+)\]/)?.[1]
-
 let { send: sw } = await wakeWorker()
 await pair()
 check('extension pairs and connects', await until(async () => (await api('/status', null)).extension_connected))
 
 const tabId = await evaluate(sw, `chrome.tabs.query({url: '${PAGE}/*'}).then(t => t[0].id)`)
+// A person lends the tab they're looking at; Chrome drops input to a tab that was never shown.
+await showTab(`${PAGE}/`)
 await message({ action: 'lend', tabId: tabId })
 const st = await api('/status', null)
 check('status shows lent tab read-only', st.tab?.url === `${PAGE}/` && st.tab.allow_actions === false, st)
@@ -85,8 +85,9 @@ check('reading refused during handoff', /handoff/.test((await call(A, 'snapshot'
 check('input refused during handoff', /handoff/.test((await call(A, 'click', { ref: 'e2' })).error ?? ''))
 await page('Runtime.evaluate', { expression: 'document.getElementById("__amp_handoff").click()' })
 check('untrusted click does not continue', (await api(`/handoff/${id}?wait=300`, A)).result?.waiting === true)
-// The Continue button sits at the bottom-left of the card.
+// The Continue button sits at the bottom-left of the card. Clicking it means looking at the tab first.
 const r = JSON.parse(rect.result.value)
+await page('Page.bringToFront')
 await trustedClick(page, r.left + 30, r.bottom - 26)
 const finished = await api(`/handoff/${id}?wait=3000`, A)
 check('trusted click on Continue finishes the handoff', finished.result?.continued === true, finished)
