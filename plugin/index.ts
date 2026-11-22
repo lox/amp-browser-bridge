@@ -182,7 +182,7 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
     // Without a ref (press on whatever has focus), describe returns only the page's URL.
     d = await call(target, ctx, 'describe', { ref: input.ref, tab: input.tab })
     // A key for whatever has focus goes only to the page the user approved it on.
-    if (tool === 'press' && !input.ref && d?.doc) input.doc = d.doc
+    if (tool === 'press' && !input.ref && d?.doc) Object.assign(input, { doc: d.doc, url: d.url })
     // A value the prompt hid stays hidden in the result, even if the field stops being a password.
     if (tool === 'fill' && d?.secret) input.secret = true
   }

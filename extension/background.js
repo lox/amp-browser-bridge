@@ -333,7 +333,7 @@ async function execute(lend, tool, args, effects) {
     case "click": return click(target, lend, args.ref, effects);
     case "type": return type(target, lend, args.ref, String(args.text ?? ""), args.submit === true, effects);
     case "fill": return fill(target, lend, args.ref, String(args.value ?? ""), args.submit === true, args.secret === true, effects);
-    case "press": return press(target, lend, args.ref, args.key, args.doc, effects);
+    case "press": return press(target, lend, args.ref, args.key, args.doc, args.url, effects);
     case "select": return select(target, lend, args.ref, String(args.value ?? ""), effects);
     case "navigate": return navigate(target, lend, args.url, effects);
     default: throw new Error(`Unknown tool: ${tool}`);
@@ -601,9 +601,13 @@ async function sendKey(target, event) {
   await cdp(target, "Input.dispatchKeyEvent", {...up, type: "keyUp"});
 }
 
-async function press(target, lend, ref, key, doc, effects) {
+async function press(target, lend, ref, key, doc, url, effects) {
   const event = parseKey(key);
-  if (!ref && doc != null && await documentID(target, lend) !== doc) throw new Error("The page changed since this key press was approved, so no key was pressed. Take a new snapshot.");
+  if (!ref && doc != null) {
+    // Document and URL from one read: an in-page route change keeps the document but not the URL.
+    const {frameTree} = await cdp(target, "Page.getFrameTree");
+    if (frameTree.frame.loaderId !== doc || frameTree.frame.url !== url) throw new Error("The page changed since this key press was approved, so no key was pressed. Take a new snapshot.");
+  }
   if (ref) {
     const {backendNodeId} = await resolveRef(target, lend, ref);
     await uncovered(target, backendNodeId, ref);
