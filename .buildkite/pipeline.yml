@@ -1,6 +1,9 @@
 # Runs `bun run check` and the headless-Chrome end-to-end tests (test/e2e). node:24 rather than
 # oven/bun, because oven/bun's `node` is Bun, and `node --check` would then run
 # extension/background.js instead of only parsing it.
+agents:
+  queue: default
+
 x-docker: &docker
   docker#v5.14.0:
     image: node:24-trixie
