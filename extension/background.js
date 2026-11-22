@@ -269,7 +269,10 @@ async function run(message) {
     tabId = policy.tabId;
     // A reload of the extension detaches the debugger; attach again on first use. Closing needs
     // no debugger, so it works on a tab Chrome won't let it attach to, such as the Web Store.
-    if (policy.agent && message.tool !== "close_tab") await attach(tabId);
+    if (message.tool !== "close_tab") {
+      if (policy.agent) await attach(tabId);
+      await thaw(tabId);
+    }
     await badge();
     if (message.tool === "close_tab" && (await session.get("handoff"))?.tabId === tabId) throw new Error("The user has the tab for a handoff. Wait for browser_handoff to return.");
     const result = message.tool === "close_tab" && policy.agent
@@ -698,6 +701,8 @@ async function waitFor(target, lend, args) {
   const started = Date.now();
   const wanted = [text && `text ${JSON.stringify(args.text)}`, url && `a URL containing ${JSON.stringify(url)}`, role && `${role}${name ? ` ${JSON.stringify(args.name)}` : ""}`].filter(Boolean).join(" and ");
   for (;;) {
+    // Chrome may freeze the tab again while it waits, and a frozen page never changes.
+    await thaw(target.tabId);
     // Refuses once the tab leaves the lent site, like every other read.
     const doc = await documentID(target, lend);
     const current = (await chrome.tabs.get(target.tabId)).url || "";
@@ -761,13 +766,19 @@ async function withChallenge(lend, result, waitMs) {
   return challenge ? {...result, challenge} : result;
 }
 
-/** Reads the page in an isolated world, invisible to its scripts. Null mid-navigation or off the lent site. */
+/**
+ * Reads the page in an isolated world, invisible to its scripts. Null mid-navigation or off the lent
+ * site. Through the debugger, which answers even if Chrome has frozen the tab again since thaw().
+ */
 async function probeChallenge(lend) {
-  const [frame] = await chrome.scripting.executeScript({target: {tabId: lend.tabId}, world: "ISOLATED", func: probePage, args: [PROBE_SELECTORS]}).catch(() => []);
-  const probe = frame?.result;
+  const target = {tabId: lend.tabId};
+  const {frameTree} = await cdp(target, "Page.getFrameTree").catch(() => ({}));
+  if (!frameTree) return null;
+  const probe = await cdp(target, "Page.createIsolatedWorld", {frameId: frameTree.frame.id, worldName: "amp-browser-bridge"})
+    .then(({executionContextId}) => cdp(target, "Runtime.evaluate", {contextId: executionContextId, expression: `(${probePage})(${JSON.stringify(PROBE_SELECTORS)})`, returnByValue: true}))
+    .then(({result, exceptionDetails}) => exceptionDetails ? null : result.value, () => null);
   if (!probe || (!lend.anyOrigin && originOf(probe.url) !== lend.origin)) return null;
   // Turnstile puts its iframe in a closed shadow root, out of querySelector's reach; the frame tree has it.
-  const {frameTree} = await cdp({tabId: lend.tabId}, "Page.getFrameTree").catch(() => ({}));
   const frames = [];
   const collect = (node) => {
     for (const child of node?.childFrames || []) {
@@ -791,6 +802,8 @@ async function detectChallenge(lend, waitMs) {
   const started = Date.now();
   while (found.kind === "non-interactive" && Date.now() - started < waitMs) {
     await sleep(1000);
+    // Only a running page clears its challenge.
+    await thaw(lend.tabId).catch(() => {});
     // A challenge often clears by navigating; a page that can't be read yet counts as still waiting.
     const probe = await probeChallenge(lend);
     if (!probe) continue;
@@ -843,6 +856,7 @@ function showCard(message) {
 async function injectCard() {
   const handoff = await session.get("handoff");
   if (!handoff || handoff.continued) return;
+  await thaw(handoff.tabId).catch(() => {});
   await chrome.scripting.executeScript({target: {tabId: handoff.tabId}, world: "ISOLATED", func: showCard, args: [handoff.message]}).catch(() => {});
 }
 
@@ -932,6 +946,16 @@ async function attach(tabId) {
   }
   await cdp({tabId}, "Page.enable");
   await cdp({tabId}, "Accessibility.enable");
+}
+
+/**
+ * Chrome freezes background tabs, and Amp's sit hidden in a collapsed group. A frozen page runs no
+ * injected script, timer or event handler until it's shown: the bot-check probe never answers, and
+ * a click lands without the page reacting. So each command unfreezes a frozen tab first, and again
+ * while it waits.
+ */
+async function thaw(tabId) {
+  if ((await chrome.tabs.get(tabId)).frozen) await cdp({tabId}, "Page.setWebLifecycleState", {state: "active"});
 }
 
 async function setPermissions(changes) {
@@ -1039,6 +1063,7 @@ async function openTab(thread, raw, effects) {
     const now = await chrome.tabs.get(tab.id);
     // A redirect into the Web Store, after the debugger attached to the page before it.
     if (now.url && isWebStore(new URL(now.url))) throw new Error("The tab reached the Web Store.");
+    await thaw(tab.id);
     await sendAgentTabs();
     await badge();
     return withChallenge({tabId: tab.id, anyOrigin: true}, {tab: tab.id, url: now.url || url.toString(), title: now.title || ""}, CHALLENGE_WAIT_MS);
