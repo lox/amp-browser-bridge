@@ -7,28 +7,25 @@
 
 <br>
 
-Works with [Amp](https://ampcode.com) threads on your Mac and in orbs in the cloud.
+Works with [Amp](https://ampcode.com) threads on your Mac and in orbs, using your existing browser logins.
 
-The agent asks before it clicks or types, and hands the tab back to you for logins, 2FA codes and
-payments.
+Amp asks before clicking or typing, and hands the tab back to you for logins, 2FA, and payments.
+
+Heavily inspired by [OpenCode Browse](https://opencode.ai/product/browse).
 
 ## Why it's safe
 
-- **You choose the tabs.** Only the tab you lend, and tabs Amp opens if you allow it.
-- **Read-only by default.** Clicks, typing and other sites each need a tick in the popup.
-- **Amp asks first** before each action that changes a page.
-- **You handle secrets.** During a handoff the agent can't read or act on the tab.
-- **Local only.** The bridge listens on `127.0.0.1`. Orbs reach it through an Amp portal that needs
-  your sign-in, and every request is signed.
-- **Stop anytime.** Click **Stop lending** or close the tab.
+- Amp can only see the tab you lend (or background tabs it opens, if you turn that on). It can't read your other tabs, cookies, or history.
+- Lent tabs start read-only and locked to their current site until you allow actions or other sites in the popup.
+- During a handoff, Amp can't see or touch the tab until you click **Continue**.
+- The bridge only listens on `127.0.0.1`. Orbs connect through an Amp portal behind your Amp login, using signed requests.
+- Click **Stop lending** or close the tab at any time to disconnect it.
 
-The approval prompts are a convenience, not a hard limit: code running in your orb can skip them.
-[Security](#security) has that and the rest of what this does not protect against.
+Approval prompts happen in the plugin, so code running in an orb can bypass them and call the bridge directly. See [Security](#security) for details.
 
 ## Set up
 
-You need the [Amp app for macOS](https://ampcode.com/docs/apps/mac) with **Run threads on this Mac**
-and **Allow Portals** turned on (App Settings → Runner), and Chrome 116 or newer.
+You'll need the [Amp macOS app](https://ampcode.com/docs/apps/mac) with **Run threads on this Mac** and **Allow Portals** enabled (`App Settings → Runner`), plus Chrome 116+.
 
 1. **Install the plugin.** In any Amp thread, ask:
 
@@ -36,277 +33,127 @@ and **Allow Portals** turned on (App Settings → Runner), and Chrome 116 or new
    Install the plugin/ directory from https://github.com/lox/amp-browser-bridge into my personal plugins as browser-bridge, then push it.
    ```
 
-   It lands in your Personal Plugins repository, so new threads on your Mac and in your orbs get it.
+   New threads on your Mac and in orbs pick it up from your personal plugins repo.
 
-2. **Load the extension.** It's submitted to the Chrome Web Store but not published yet, so for now
-   you load it unpacked. Download
-   [`amp-browser-bridge-0.2.0.zip`](https://github.com/lox/amp-browser-bridge/releases/download/v0.2.0/amp-browser-bridge-0.2.0.zip)
-   from the [v0.2.0 release](https://github.com/lox/amp-browser-bridge/releases/tag/v0.2.0)
-   (sha256 `64bcdcb5e14925b9e15aaace5180ff4ca3896e11baa221a34d278256a6c32880`) and unzip it.
-   Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and pick the
-   unzipped folder. Pin the extension from Chrome's puzzle-piece menu. Its ID is always
-   `goknnphohomgekkahpdiphdfladfnmoc`.
+2. **Load the extension.** Chrome Web Store review is still pending, so load it unpacked for now. Download and unzip [`amp-browser-bridge-0.2.0.zip`](https://github.com/lox/amp-browser-bridge/releases/download/v0.2.0/amp-browser-bridge-0.2.0.zip) from the [v0.2.0 release](https://github.com/lox/amp-browser-bridge/releases/tag/v0.2.0). Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, select the unzipped folder, and pin the extension to Chrome's toolbar.
 
-   Chrome opens the extension's setup page, which follows the remaining steps live and says how to
-   fix any that fail. Reopen it from the popup's **Setup and status** link.
+   Installing opens the setup checklist (or click **Setup and status** in the popup).
 
-3. **Pair it.** In an Amp thread on your Mac, ask *"pair the browser extension"*. Amp opens the setup
-   page with a one-time code, and the extension pairs by itself.
+3. **Pair.** In an Amp thread on your Mac, ask *"pair the browser extension"*. Amp opens the setup page with a one-time code and pairs automatically.
 
-4. **Publish it to your orbs.** In an Amp thread on your Mac, ask *"publish the browser bridge"* and
-   confirm. The portal belongs to that thread, so keep it unarchived. Skip this step if you only use
-   threads on your Mac.
-
-The setup page then looks like this. Its last step turns green once you lend a tab:
+4. **Publish to orbs** *(optional if you only run local Mac threads)*. In an Amp thread on your Mac, ask *"publish the browser bridge"* and confirm. Keep that thread unarchived so the portal stays up.
 
 <p align="center"><img src="docs/setup-done.png" width="620" alt="The setup page with all four steps checked"></p>
 
-## Use it
+## Usage
 
-Open the page you want help with, click the extension, and choose **Lend this tab**. Then ask Amp
-about it. The tab is lent read-only and limited to its current site.
+Open a page, click the extension icon, and click **Lend this tab**. The tab joins a green **Amp** tab group and starts read-only on that site.
 
-- **Allow clicks, typing and navigation** lets the agent act on the page. Amp asks before each
-  action; **Allow on *site* in the lent tab for this thread** stops the questions for that thread on
-  that site.
-- **Allow other sites** lets the agent navigate away from the site you lent the tab on. If you
-  browse away yourself, the agent's commands are refused until you come back.
-- **Continue** ends a handoff, on the card the agent shows on the page or in the popup.
-- **Release to other threads** frees the tab from the thread holding it, so the next thread to ask
-  gets it. One thread holds the tab at a time, until it has been idle for 10 minutes. Release
-  doesn't end the lend: the tab stays lent and in the Amp group. **Stop lending** ends it.
-- The lent tab moves into a green **Amp** tab group, and goes back to its earlier group when you
-  stop lending. On that tab the toolbar badge shows `ON`, `RUN` while a command runs, and `WAIT`
-  when Amp needs you.
+Popup controls:
 
-If a dialog, banner or overlay covers the element the agent wants to click, type into, select in or
-press a key on, the action is refused rather than landing on whatever is on top.
+- **Allow clicks, typing and navigation** - lets Amp click, type, and navigate. Amp asks before each action, with an option to allow that site for the thread.
+- **Allow other sites** - lets Amp navigate to other sites. If this is off and you navigate away yourself, Amp is blocked until you go back.
+- **Release to other threads** - frees the tab from the current thread (one thread holds it at a time, with a 10-minute idle timeout) without ending the lend. **Stop lending** disconnects the tab.
 
-### Amp's own tabs
+If a modal or banner covers the element Amp tries to use, the action fails instead of clicking whatever is on top.
 
-**Let Amp open its own tabs** in the popup is off by default. With it on, a thread can open pages
-without you lending one: Amp asks before it opens a site, then the tab opens in the background of
-the window you last used, in a collapsed green **Amp** tab group. The collapsed group is easy to
-miss; the popup lists Amp's tabs with **Show** and **Close**.
+### Background tabs
 
-- Only the thread that opened a tab can use it. A thread can have several, while another thread
-  holds the lent tab.
-- Clicks, typing and navigation in them need no checkbox and may go to any site. Amp still asks
-  before each action, or once per site per thread.
-- Chrome freezes background tabs, which stops their scripts. Each command unfreezes the tab it runs
-  on, so pages still react to Amp's clicks and keys; Chrome may freeze the tab again afterwards.
-- They close after 10 minutes without a command, never while one runs or while Amp waits for you.
-  Turning the setting off closes them all.
-- A handoff in one of them expands its group, shows `WAIT` on every tab's toolbar button, and the
-  popup says which tab needs you.
-- A tab stops being Amp's when you lend it, drag it out of the group, rename or recolour the group,
-  or click Cancel on Chrome's "started debugging" bar. It stays open, as yours.
+Turn on **Let Amp open its own tabs** in the popup to let threads open background tabs without you lending one. Amp asks before opening a site, then puts the tab in a collapsed **Amp** group; the popup lists open tabs with **Show** and **Close**.
 
-**Known bug:** in one of Amp's tabs that has never been shown, clicks, and the Enter that
-`browser_type` or `browser_fill` send with `submit`, are silently dropped, though the tool reports
-success. It happens on macOS and Linux. Show the tab once first (click it, or **Show** in the popup).
+- Only the thread that opened a tab can use it. Actions work on any site (still with approval prompts), and idle tabs close after 10 minutes.
+- Chrome freezes hidden background tabs, so each command wakes the tab first so the page still reacts.
+- Dragging a tab out of the group, lending it, editing the group, or cancelling Chrome's debugger bar turns it into a normal tab.
+
+**Known issue:** Chrome silently drops clicks and `submit` Enter keys on background tabs that have never been visible, even though the tool reports success. Click the tab (or **Show** in the popup) once to work around it.
 
 ### Bot checks
 
-After `browser_navigate` and `browser_open_tab`, and with every snapshot, the extension checks
-whether the page is a bot check (Cloudflare's "Just a moment...", a captcha, PerimeterX "Press &
-Hold", DataDome) or a block page ("Sorry, you have been blocked", "Access Denied"). After a
-navigation it waits up to 12 seconds for a check that clears by itself. If one is still there, the
-result tells the agent to hand the tab to you with `browser_handoff`; on a block page, to stop. It
-never tries to solve one. Detection is adapted from
-[OpenCode Browse](https://github.com/anomalyco/browse) and reads only the page's title, the start of
-its text, its frame and script addresses and a few vendor elements.
+When navigating or taking a snapshot, the extension checks for bot challenges (Cloudflare, CAPTCHAs, PerimeterX, DataDome) and block pages. On navigation it waits up to 12 seconds for automatic checks to clear. If a challenge needs a human, it tells Amp to hand the tab over instead of trying to solve it; on a block page, it tells Amp to stop. Detection is adapted from [anomalyco/browse](https://github.com/anomalyco/browse).
 
 ## Troubleshooting
 
-The setup page is the first place to look; each red step says how to fix it:
+Check **Setup and status** in the popup first. Each failing check explains how to fix it.
 
-<p align="center"><img src="docs/setup-no-bridge.png" width="620" alt="The setup page with the first step red: nothing answers on 127.0.0.1:19989, and how to fix it"></p>
-
-- **"Nothing answers on 127.0.0.1:19989".** Open the Amp app with **Run threads on this Mac**
-  turned on, and check the plugin is installed. The bridge starts with Amp.
-- **"Something other than the bridge answers on port 19989".** Quit the program holding the port,
-  then restart the Amp app.
-- **Pairing didn't happen.** If Chrome shows the setup page as blocked, reload it. If it's still
-  blocked, open **Setup and status** from the popup once, so the bridge learns this build's ID, then
-  ask Amp to pair again. Or enter the code from `~/.amp-browser-bridge/pairing-code` on the setup
-  page. Codes last 10 minutes.
-- **"The extension was updated and now pairs in a safer way".** Browsers paired with a version
-  before 0.2.0 pair once more. Update the plugin on your Mac too, then ask Amp to *"pair the browser
-  extension"*.
-- **"The bridge no longer knows this browser".** The bridge has no key for it, for example after
-  `~/.amp-browser-bridge` was removed. Ask Amp to *"pair the browser extension"*.
-- **"Something on 127.0.0.1:19989 could not prove it is your bridge".** Either another program
-  holds the bridge's port (quit it, then restart the Amp app), or another browser or Chrome profile
-  has paired with the bridge since; the bridge keeps one key, so ask Amp to pair this one again.
-- **Orbs can't reach the tab.** Check the setup page's **Published to your orbs** step. If it's red,
-  or the thread that owns the portal was archived, ask *"publish the browser bridge"* again from a
-  thread on your Mac. Orbs that were already running need `amp orb restart-processes` to pick up
-  the new secrets.
+- **Setup page blocked during pairing:** reload the tab. If it stays blocked, open **Setup and status** from the popup once so the bridge learns your unpacked extension ID, then pair again (or paste the code from `~/.amp-browser-bridge/pairing-code`; codes expire after 10 minutes).
+- **Orbs can't reach a published bridge:** if the thread that published the portal was archived, run *"publish the browser bridge"* again from a Mac thread. Orbs that were already running need `amp orb restart-processes` to pick up updated secrets.
+- **Asked to pair again:** the bridge stores one browser key at a time, so pairing another Chrome profile or browser replaces the previous one. Browsers paired before `v0.2.0` also need an updated Mac plugin and a fresh pair.
 
 ## Tools
 
-| Tool | What it does |
+| Tool | Description |
 | --- | --- |
-| `browser_status` | Connection, lent tab, which thread holds it, this thread's own tabs, how its last handoff stands, and what to do next |
-| `browser_open_tab`, `browser_close_tab` | Open a background tab of the thread's own, after your approval, and close it. If the new tab can't be used, it is closed again |
-| `browser_snapshot` | Accessibility outline with refs (`e12`) for the action tools; flags a bot check or block page |
-| `browser_screenshot` | JPEG of the viewport |
-| `browser_wait_for` | Wait (up to 20 seconds) for text, a URL or an element by role and name to appear |
-| `browser_scroll` | Scroll by a number of pixels |
-| `browser_click`, `browser_type`, `browser_navigate` | Act on the page, after your approval. `browser_navigate` waits for the page, reports a bot check or block page, and reports a URL that starts a download as `download` rather than an error |
-| `browser_fill` | Like `browser_type`, but hides the value of password and one-time-code fields in the approval prompt and the result |
-| `browser_press` | Press a key such as Enter, Escape or Tab, on a ref or on whatever has focus, after your approval |
-| `browser_select` | Choose an option of a `<select>` by value or label, after your approval |
-| `browser_handoff` | Hand the tab to you and wait for **Continue** (up to 30 minutes). If a call is lost while the card is up, calling it again waits for the same card |
-| `browser_bridge_pair` | On the Mac only: open the setup page with a new one-time pairing code |
-| `browser_bridge_publish` | On the Mac only: expose the bridge to your orbs; it republishes itself on every start |
+| `browser_status` | Connection status, lent tab, active thread, background tabs, and handoff state |
+| `browser_open_tab`, `browser_close_tab` | Open or close a background tab for the current thread |
+| `browser_snapshot` | Accessibility tree with element refs (`e12`) |
+| `browser_screenshot` | Viewport screenshot (JPEG) |
+| `browser_wait_for` | Wait up to 20s for text, a URL, or an element by role and name |
+| `browser_scroll` | Scroll the page |
+| `browser_click`, `browser_type`, `browser_navigate` | Click, type, or navigate (URLs that trigger a download return `download`) |
+| `browser_fill` | Fill a field, hiding password and one-time-code values in prompts and results |
+| `browser_press` | Press a key (`Enter`, `Escape`, `Tab`, etc.) on an element or the focused target |
+| `browser_select` | Select a `<select>` option by value or label |
+| `browser_handoff` | Hand the tab back to you and wait up to 30m for **Continue** (re-attaches if an earlier call disconnected) |
+| `browser_bridge_pair` | Mac only: open the setup page with a new pairing code |
+| `browser_bridge_publish` | Mac only: publish the bridge through an Amp portal (republishes on startup) |
 
-Page tools take an optional `tab` (from `browser_open_tab`); without it they use the lent tab.
+Page tools take an optional `tab` ID from `browser_open_tab`, defaulting to the lent tab. Tools that change the page ask for approval first.
 
-Chrome never lets extensions control Chrome Web Store pages, so the tools refuse them, and a lent
-tab you take there stops being lent. Do those steps by hand.
+Chrome blocks extensions on Chrome Web Store pages, so tools refuse them and navigating a lent tab there ends the lend.
 
-The download and Web Store handling, and closing a tab `browser_open_tab` can't use, are on `main`
-and not yet in the v0.2.0 extension.
+Changes merged since `v0.2.0` (frozen-tab unfreezing, download and Web Store handling, and closing unusable background tabs) require loading `extension/` from `main` until the next release.
 
 ## Security
 
-The agent works in a browser you are signed in to, so treat what it reads as untrusted: a page or
-an email can try to steer it.
+Treat page content as untrusted: because Amp reads pages in your signed-in browser, prompt injection in a page or email can try to steer the agent.
 
-- **Who can drive the tab.** Requests to the bridge are signed with `BROWSER_BRIDGE_TOKEN` (in
-  `~/.amp-browser-bridge/token`, mode 600): an HMAC of the method, path, thread and body, a time
-  within five minutes of the bridge's clock, and a nonce the bridge accepts once. The bridge signs
-  its answers the same way, and the plugin rejects answers it didn't sign. The token itself is never
-  sent to the bridge. Through the portal, Amp also requires your sign-in.
-- **Pairing.** A pairing code works once, within 10 minutes, and five wrong codes void it. The
-  browser exchanges it for a random key of its own over a fresh ECDH key agreement, with the code
-  stretched by PBKDF2, so neither the code nor the key crosses the connection in the clear. On every
-  connection both sides prove they hold the key with an HMAC over fresh nonces, the bridge first;
-  the extension sends nothing about your tabs and obeys nothing until then. The extension link
-  accepts only this extension's two IDs (unpacked and Web Store), dialled as `127.0.0.1` or
-  `localhost`, which turns away web pages, other extensions and DNS rebinding. The HTTP API refuses
-  cross-site browser requests.
-- **What that does not cover.** Programs running as you can read `~/.amp-browser-bridge` and
-  Chrome's storage, so they can do anything you can. A program that holds port 19989 while the
-  bridge is down sees what threads send (tool names and arguments, such as text to type). It can't
-  make new requests or answer as the bridge, but it could replay one it saw to the real bridge
-  within five minutes. It can also make the extension drop its key by refusing it, so you pair
-  again.
-- **What enforces what.** The extension enforces the hard limits: only the lent tab and, if you
-  allowed them, tabs Amp opened; the lent tab read-only and on its own site until you allow more;
-  nothing on a tab during its handoff. The approval prompts guard the agent's tools, but code
-  running in your orb can read `BROWSER_BRIDGE_TOKEN` and call the bridge directly, so keep the lent
-  tab read-only unless you are watching. The one-thread lease and each tab belonging to the thread
-  that opened it keep threads from interleaving; they are not security boundaries.
-- **Amp's own tabs are wider.** With **Let Amp open its own tabs** on, anyone with the token can
-  open any site in your signed-in browser and click and type there, without the lent tab's
-  read-only and one-site limits. Only the approval prompts stand in the way, and code in an orb can
-  skip those. Keep it off unless you want that.
-- **Refs.** They expire when the page navigates, and an element is checked against the snapshot's
-  role and name before each action. If the page moves focus while text is typed, the result is
-  reported as unknown.
-- **What it sees.** Snapshots and `browser_wait_for` leave out what's typed in fields. Screenshots
-  show the page as it is. `browser_fill` hides what goes into password and one-time-code fields from
-  the approval prompt and its result, but the agent chose the value, so it still knows it.
-- **The card.** A page can't press **Continue** for you, but it can hide the card; use the popup's
-  **Continue** then.
-- **Limits.** The site limit covers navigation, not requests the page makes itself. If an answer is
-  lost in the middle of an action (the extension disconnects, or the portal times out), the result
-  is reported as unknown and never retried, so check the page.
+- Requests and responses are HMAC-signed with `BROWSER_BRIDGE_TOKEN` (`~/.amp-browser-bridge/token`, `0600`) using a 5-minute window and single-use nonces; the token itself is never sent. Cross-origin browser requests are rejected, and orbs connect through an Amp portal behind your Amp login.
+- Pairing negotiates a browser key over ECDH + PBKDF2 (single-use 10-minute code, 5-attempt lockout), and every WebSocket connection runs a mutual HMAC check before sharing state. The WebSocket only accepts loopback connections from this extension's ID, blocking web pages, other extensions, and DNS rebinding.
+- The extension enforces tab scope, read-only mode, single-site lock, and handoffs. Approval prompts live in the plugin, so orb processes with `BROWSER_BRIDGE_TOKEN` can bypass them: keep lent tabs read-only unless you trust the orb, and leave **Let Amp open its own tabs** off unless you want orbs able to open and drive any site. Thread leases only stop threads from stepping on each other.
+- Local processes running as your macOS user can read `~/.amp-browser-bridge` and your Chrome profile. A process that grabs port `19989` while the bridge is stopped can see incoming tool calls (and replay one within 5 minutes) or force a re-pair, but can't forge requests or signed responses.
+- Snapshots omit form values, screenshots capture visible pixels, and `browser_fill` hides password/OTP values in prompts and output (though the agent chose the value). Element refs (`e12`) reset on navigation and check role and name; if focus moves while typing or a connection drops mid-action, the tool returns `unknown` without retrying. Pages can't click **Continue** on their own handoff card, though they can cover it (use **Continue** in the popup instead). Single-site lock only restricts navigation, not requests made by the page itself.
 
 ## How it works
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/how-dark.png">
-  <img src="docs/how-light.png" alt="How it works. In the cloud, an Amp thread in an orb calls browser tools over https. An Amp portal lets the call in only with your Amp sign-in. On your Mac, the bridge in the Amp plugin listens on 127.0.0.1:19989, accepts only signed requests, and passes the call over a loopback WebSocket to the Chrome extension, which acts on a tab you lent or Amp opened; clicks and typing need your OK. For a login, the agent hands the tab back and can't see it while it waits for you.">
-</picture>
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/how-dark.png">
+    <img src="docs/how-light.png" alt="How it works. In the cloud, an Amp thread in an orb calls browser tools over https. An Amp portal lets the call in only with your Amp sign-in. On your Mac, the bridge in the Amp plugin listens on 127.0.0.1:19989, accepts only signed requests, and passes the call over a loopback WebSocket to the Chrome extension, which acts on a tab you lent or Amp opened; clicks and typing need your OK. For a login, the agent hands the tab back and can't see it while it waits for you.">
+  </picture>
+</p>
 
-`plugin/index.ts` decides its role by platform: on macOS it runs the bridge (`plugin/host.ts`);
-elsewhere it reads `BROWSER_BRIDGE_URL` and `BROWSER_BRIDGE_TOKEN`, signs in to the portal with
-`amp portal login-url`, and forwards each tool call. Every Amp process on the Mac loads the plugin;
-the first one to bind port 19989 runs the bridge and the others take over if it exits. Set
-`AMP_BROWSER_BRIDGE_ROLE` to `host`, `client` or `off` to override, and `BROWSER_BRIDGE_PORT` to
-change the port (the extension expects 19989). You can also run the bridge without Amp:
-`bun plugin/host.ts`.
+On macOS, `plugin/index.ts` runs the local bridge (`plugin/host.ts`) on `127.0.0.1:19989`; whichever Amp process binds the port first hosts it, and another takes over if it exits. Elsewhere, the plugin runs as a client, reading `BROWSER_BRIDGE_URL` and `BROWSER_BRIDGE_TOKEN`, signing in with `amp portal login-url`, and forwarding tool calls. Override the role with `AMP_BROWSER_BRIDGE_ROLE` (`host`, `client`, or `off`), change the port with `BROWSER_BRIDGE_PORT`, or run the bridge standalone with `bun plugin/host.ts`.
 
-Publishing serves the bridge through a [runner portal](https://ampcode.com/docs/cli/runners) owned
-by the thread you asked in, and stores `BROWSER_BRIDGE_TOKEN` as a personal Amp secret and
-`BROWSER_BRIDGE_URL` as a personal environment variable, which new orbs receive. The bridge
-republishes itself through the same thread every time it starts. The portal's address depends on
-the directory the `amp` CLI runs in, so the plugin always runs it from `~/.amp-browser-bridge`, and
-the address stays the same across restarts and plugin updates. If republishing fails, the setup
-page shows the bridge as not published.
+Publishing opens a [runner portal](https://ampcode.com/docs/cli/runners) from `~/.amp-browser-bridge` (keeping the portal URL stable across restarts), stores `BROWSER_BRIDGE_TOKEN` as a personal secret and `BROWSER_BRIDGE_URL` as a personal environment variable for new orbs, and republishes through that thread on startup.
 
-The extension (`extension/`) attaches Chrome's debugger only to the lent tab and Amp's own tabs. Its
-half of the pairing handshake is `extension/pairing.js`; the bridge's half is in `plugin/host.ts`,
-and the tests run the two against each other. The lend, snapshot refs and a waiting handoff live in
-session storage, so they survive a service worker restart; the key and the list of Amp's own tabs
-live in local storage.
-
-The setup page (`extension/setup.html`) finds the bridge by its `401` answer on
-`http://127.0.0.1:19989/status`, sending the extension's ID in `x-extension-id`. The bridge records
-the last known ID it saw in `~/.amp-browser-bridge/extension-id`, and pairing opens
-`setup.html#code=<code>` under that ID, so it reaches the build you installed. With no ID recorded
-it picks the Web Store build. The bridge also tells the extension where it is published (portal URL,
-owning thread and time, never the token), so the setup page can show it.
+The extension (`extension/`) attaches `chrome.debugger` only to the lent tab and background tabs Amp opened. Active lend state, snapshot refs, and pending handoffs live in `chrome.storage.session` across service worker restarts; the pairing key (`extension/pairing.js`) and agent tab list live in `chrome.storage.local`. The bridge records the last extension ID seen on `/status` in `~/.amp-browser-bridge/extension-id` so pairing opens `setup.html#code=<code>` in whichever build (unpacked or Web Store) you have installed.
 
 ## Develop
 
 ```sh
 bun install
-bun run check   # type check, syntax check the extension, run the tests
-bun run e2e     # the real extension in a real Chrome window against a real bridge
+bun run check   # typecheck, extension syntax check, unit tests
+bun run e2e     # e2e suite in headed Chrome against a local bridge
 ```
 
-`test/fixtures/challenges/` holds what the challenge probe read from real challenge, block and
-ordinary pages, with IP addresses and query values scrubbed; `test/challenge.test.ts` checks how
-each is classified. Add a page there when detection misses one or flags one wrongly.
+`bun run e2e` runs `test/e2e/*.e2e.ts` against a fresh bridge and headed Chrome for Testing (via Xvfb on headless Linux) using ports `8765`, `9333`, and `19989`, so quit any running bridge first. Branded Chrome ignores `--load-extension`; set `CHROME_BIN` to override agent-browser's Chrome for Testing binary. Pass a script name to run one test (e.g. `bun run e2e popup`), or set `E2E_SHOTS=<dir>` to save screenshots.
 
-`bun run e2e` runs each `test/e2e/*.e2e.ts` against a fresh bridge and a fresh headed Chrome with
-the extension loaded and Developer mode on, using ports 8765, 9333 and 19989, so quit a running
-bridge first. The scripts click what a person clicks: the toolbar popup, the setup page and its
-`setup.html#code=` pairing link, **Reload** in `chrome://extensions`, and **Continue** on a sign-in
-handoff. On Linux without a display it starts Xvfb (`apt-get install xvfb`). `CHROME_BIN` must be
-Chromium or Chrome for Testing, because branded Chrome ignores `--load-extension`; it defaults to
-agent-browser's newest Chrome for Testing. Pass a name to run one script, such as `bun run e2e popup`, and
-set `E2E_SHOTS=<dir>` to save screenshots of the whole screen at the steps worth seeing.
+Inside an Amp orb, `portal.e2e.ts` also tests the client plugin end to end through the thread's portal using a mount namespace and passwordless `sudo`, without touching your `BROWSER_BRIDGE_*` secrets. Checks marked `KNOWN` track known bugs without failing the run. Buildkite runs both suites via [`.buildkite/pipeline.yml`](.buildkite/pipeline.yml).
 
-In an Amp orb, `portal.e2e.ts` also serves the bridge through the thread's portal and runs the
-plugin in its client role against it, from a mount namespace that sends its requests out through
-Amp's portal proxy with a portal sign-in, as another orb's are. It needs passwordless `sudo` for
-that and skips itself outside an orb. It never touches the `BROWSER_BRIDGE_URL` and
-`BROWSER_BRIDGE_TOKEN` secrets. A check marked `KNOWN` is a known bug: it doesn't fail the run until
-the bug is fixed. CI runs `bun run check` and `bun run e2e` on Buildkite with
-[`.buildkite/pipeline.yml`](.buildkite/pipeline.yml).
-
-After changing `extension/`, click **Reload** on its card in `chrome://extensions`.
-
-The README images and `docs/tweet-card.png` are drawn by `docs/art/art.ts`; its header says how to
-render them.
+`test/fixtures/challenges/` stores scrubbed probes from real bot challenges, block pages, and normal pages for `test/challenge.test.ts`. After editing `extension/`, click **Reload** in `chrome://extensions`. `docs/art/art.ts` generates the README diagrams and `docs/tweet-card.png`.
 
 ## Release
 
 ```sh
-bun run release            # dist/amp-browser-bridge-<version>.zip, keeps the fixed ID
-bun run release --no-key   # without the manifest key, for Chrome Web Store uploads
+bun run release            # dist/amp-browser-bridge-<version>.zip (with manifest key)
+bun run release --no-key   # without manifest key, for Chrome Web Store uploads
 ```
 
-The version comes from `extension/manifest.json`; bump it before each release. The zip is the
-`extension/` folder as is, and the same sources always give the same bytes. Unzip it and use
-**Load unpacked** to try it.
+Bump the version in `extension/manifest.json` before releasing. `bun run release` builds a reproducible zip of `extension/`.
 
-The unpacked build's fixed ID comes from the `key` in `extension/manifest.json` and is exported as
-`UNPACKED_ID` from `plugin/extension-id.ts`; a test fails if they disagree. The Chrome Web Store
-item has its own ID, `STORE_ID` in the same file, because the store keeps its own key; store
-uploads always use `--no-key`. The plugin works with both.
+Unpacked builds keep a fixed extension ID (`goknnphohomgekkahpdiphdfladfnmoc`, `UNPACKED_ID` in `plugin/extension-id.ts`) via the `key` in `extension/manifest.json`. Chrome Web Store uploads strip that key with `--no-key` and use `STORE_ID`; the bridge accepts both.
 
-The extension is submitted to the Chrome Web Store as Unlisted and is waiting for review.
-[`docs/chrome-web-store.md`](docs/chrome-web-store.md) has the upload checklist, listing text,
-permission justifications and the plan for moving to the store's ID;
-[`docs/privacy.md`](docs/privacy.md) is the privacy policy. `CHROME=<Chromium binary> bun
-scripts/store-images.ts` renders the store screenshots and promo tile into `docs/store/`.
+See [`docs/chrome-web-store.md`](docs/chrome-web-store.md) for the Web Store listing and upload checklist, [`docs/privacy.md`](docs/privacy.md) for the privacy policy, and `scripts/store-images.ts` to render `docs/store/` assets.
 
 ## License
 
