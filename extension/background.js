@@ -332,7 +332,7 @@ async function execute(lend, tool, args, effects) {
     case "wait_for": return waitFor(target, lend, args);
     case "click": return click(target, lend, args.ref, effects);
     case "type": return type(target, lend, args.ref, String(args.text ?? ""), args.submit === true, effects);
-    case "fill": return fill(target, lend, args.ref, String(args.value ?? ""), args.submit === true, effects);
+    case "fill": return fill(target, lend, args.ref, String(args.value ?? ""), args.submit === true, args.secret === true, effects);
     case "press": return press(target, lend, args.ref, args.key, args.doc, effects);
     case "select": return select(target, lend, args.ref, String(args.value ?? ""), effects);
     case "navigate": return navigate(target, lend, args.url, effects);
@@ -516,6 +516,8 @@ async function replaceText(target, lend, ref, text, effects) {
   await uncovered(target, backendNodeId, ref);
   // Focus and select in an isolated world, without bringing the tab to the front, and check that
   // the field really has focus: the page can't redirect it there, but its own handlers could.
+  // focus() runs the page's own handlers, so from here a failure leaves the outcome unknown.
+  effects.sent = true;
   const focused = await isolated(target, backendNodeId, function () {
     this.focus();
     if (typeof this.select === "function") this.select();
@@ -530,7 +532,6 @@ async function replaceText(target, lend, ref, text, effects) {
     return active === this;
   });
   if (!focused) throw new Error(`${ref} did not take focus. Take a new snapshot.`);
-  effects.sent = true;
   await cdp(target, "Input.insertText", {text});
   // The page could still move focus between the check and the insert; then the outcome is unknown.
   if (!await isolated(target, backendNodeId, hasFocus)) throw new Error(`Focus moved away from ${ref} while typing; check where the text went.`);
@@ -543,10 +544,12 @@ async function type(target, lend, ref, text, submit, effects) {
   return {typed: ref, submitted: submit};
 }
 
-async function fill(target, lend, ref, value, submit, effects) {
+async function fill(target, lend, ref, value, submit, approvedSecret, effects) {
   // Checked before the value goes in too, so a page that turns a password field into a text field
   // as you type can't make the result show it.
-  const before = await isolated(target, (await resolveRef(target, lend, ref)).backendNodeId, isSecret);
+  // approvedSecret: the approval prompt hid the value, so the result does too, even if the user
+  // has since shown the password.
+  const before = approvedSecret || await isolated(target, (await resolveRef(target, lend, ref)).backendNodeId, isSecret);
   const backendNodeId = await replaceText(target, lend, ref, value, effects);
   const secret = before || await isolated(target, backendNodeId, isSecret);
   // Enter last: a submit can navigate, and then the field is gone.
@@ -601,6 +604,8 @@ async function press(target, lend, ref, key, doc, effects) {
   if (ref) {
     const {backendNodeId} = await resolveRef(target, lend, ref);
     await uncovered(target, backendNodeId, ref);
+    // focus() runs the page's own handlers, so from here a failure leaves the outcome unknown.
+    effects.sent = true;
     if (!await isolated(target, backendNodeId, function () {
       this.focus();
       let active = document.activeElement;

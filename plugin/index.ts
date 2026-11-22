@@ -183,6 +183,8 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
     d = await call(target, ctx, 'describe', { ref: input.ref, tab: input.tab })
     // A key for whatever has focus goes only to the page the user approved it on.
     if (tool === 'press' && !input.ref && d?.doc) input.doc = d.doc
+    // A value the prompt hid stays hidden in the result, even if the field stops being a password.
+    if (tool === 'fill' && d?.secret) input.secret = true
   }
   // An allowance covers one thread on one site: the page's current site, or where navigation goes.
   const site = url ? url.origin : new URL(d!.url).origin
