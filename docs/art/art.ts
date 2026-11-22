@@ -139,29 +139,15 @@ ${body}
 </svg>`;
 }
 
-// ---------- Banner: 1000x340 ----------
+// ---------- Banner: 1000x320 ----------
 function banner(t: T) {
-  const W = 1000, H = 340;
-  const link = `M 652 150 C 690 150, 680 200, 712 200`;
+  const W = 1000, H = 320;
   return svg(W, H, t, `
-  ${icon(56, 58, 60, t)}
-  ${text(56, 172, "Amp Browser Bridge", `${SANS} font-size="40" font-weight="800" letter-spacing="-1" fill="${t.ink}"`)}
-  ${text(56, 210, "Lend one Chrome tab to your Amp threads,", `${SANS} font-size="19" fill="${t.muted}"`)}
-  ${text(56, 236, "even ones running in an orb in the cloud.", `${SANS} font-size="19" fill="${t.muted}"`)}
-  <g>
-    <rect x="56" y="262" width="22" height="22" rx="6" fill="${t.green}"/>
-    ${text(67, 277.5, "✓", `${SANS} font-size="12" font-weight="700" fill="${t.greenInk}" text-anchor="middle"`)}
-    ${text(86, 278, "asks first", `${SANS} font-size="14" font-weight="500" fill="${t.ink}"`)}
-    <rect x="172" y="262" width="22" height="22" rx="6" fill="${t.orange}"/>
-    ${text(183, 278, "↩", `${SANS} font-size="13" font-weight="700" fill="#fff" text-anchor="middle"`)}
-    ${text(202, 278, "hands back logins", `${SANS} font-size="14" font-weight="500" fill="${t.ink}"`)}
-    <rect x="338" y="262" width="22" height="22" rx="6" fill="#111827" ${t.dark ? `stroke="#475569"` : ""}/>
-    ${lock(343, 264, "#f9fafb")}
-    ${text(368, 278, "127.0.0.1 only", `${SANS} font-size="14" font-weight="500" fill="${t.ink}"`)}
-  </g>
-  ${browser(652, 52, 308, 254, t)}
-  ${thread(466, 128, 240, t, 0.86)}
-  ${handoffCard(764, 198, 186, t)}
+  ${icon(56, 84, 52, t)}
+  ${text(56, 190, "Amp Browser Bridge", `${SANS} font-size="40" font-weight="800" letter-spacing="-1" fill="${t.ink}"`)}
+  ${text(56, 228, "Lend one Chrome tab to your Amp threads.", `${SANS} font-size="19" fill="${t.muted}"`)}
+  ${browser(612, 33, 340, 254, t)}
+  ${handoffCard(740, 179, 196, t)}
   `);
 }
 
