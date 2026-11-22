@@ -5,8 +5,6 @@
   </picture>
 </p>
 
-<br>
-
 Works with [Amp](https://ampcode.com) threads on your Mac and in orbs, using your existing browser logins.
 
 Amp asks before clicking or typing, and hands the tab back to you for logins, 2FA, and payments.
