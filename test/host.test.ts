@@ -401,6 +401,7 @@ test("Amp's own tabs skip the lent tab's lease, and each thread sees only its ow
   expect((await (await api('/status', B)).json()).agent_tabs).toEqual({ enabled: true, tabs: [{ tab: 8, title: 'b', url: 'https://b.test/' }] })
   // A handoff on B's own tab doesn't touch the lease either.
   expect((await call(B, 'handoff', { message: 'Sign in', tab: 8 })).result.handoff_id).toBeString()
+  await until(() => ext.messages.some((m) => m.type === 'handoff'))
   expect(ext.messages.find((m) => m.type === 'handoff')).toMatchObject({ thread: B, tab: 8 })
 })
 
