@@ -333,7 +333,7 @@ async function execute(lend, tool, args, effects) {
     case "click": return click(target, lend, args.ref, effects);
     case "type": return type(target, lend, args.ref, String(args.text ?? ""), args.submit === true, effects);
     case "fill": return fill(target, lend, args.ref, String(args.value ?? ""), args.submit === true, args.secret === true, effects);
-    case "press": return press(target, lend, args.ref, args.key, args.doc, args.url, effects);
+    case "press": return press(target, lend, args.ref, args.key, args.doc, args.url, args.focused, effects);
     case "select": return select(target, lend, args.ref, String(args.value ?? ""), effects);
     case "navigate": return navigate(target, lend, args.url, effects);
     default: throw new Error(`Unknown tool: ${tool}`);
@@ -467,7 +467,7 @@ async function describe(target, lend, tab, ref) {
     if (!lend.anyOrigin && originOf(frameTree.frame.url) !== lend.origin) {
       throw new Error(`The tab has left ${lend.origin}, the site it was lent on. Ask the user to go back or to allow other sites.`);
     }
-    return {url: frameTree.frame.url, doc: frameTree.frame.loaderId};
+    return {url: frameTree.frame.url, doc: frameTree.frame.loaderId, focused: await focusedNode(target, frameTree)};
   }
   const entry = await resolveRef(target, lend, ref);
   return {ref, role: entry.role, name: entry.name, url: tab.url, secret: await isolated(target, entry.backendNodeId, isSecret)};
@@ -492,6 +492,14 @@ async function uncovered(target, backendNodeId, ref) {
   }, {node: hit.backendNodeId});
   if (!inside) throw new Error(`Something else covers ${ref} (a dialog or banner?). Take a new snapshot.`);
   return {x, y};
+}
+
+/** The backend node ID of the element with focus (inside shadow roots too), read in an isolated world. */
+async function focusedNode(target, frameTree) {
+  const {executionContextId} = await cdp(target, "Page.createIsolatedWorld", {frameId: frameTree.frame.id, worldName: "amp-browser-bridge"});
+  const {result} = await cdp(target, "Runtime.evaluate", {contextId: executionContextId, expression: "(() => { let a = document.activeElement; while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement; return a; })()"});
+  if (!result.objectId) return 0;
+  return (await cdp(target, "DOM.describeNode", {objectId: result.objectId})).node.backendNodeId;
 }
 
 function hasFocus() {
@@ -601,12 +609,13 @@ async function sendKey(target, event) {
   await cdp(target, "Input.dispatchKeyEvent", {...up, type: "keyUp"});
 }
 
-async function press(target, lend, ref, key, doc, url, effects) {
+async function press(target, lend, ref, key, doc, url, focused, effects) {
   const event = parseKey(key);
   if (!ref && doc != null) {
     // Document and URL from one read: an in-page route change keeps the document but not the URL.
+    // And the same element must still have focus: a dialog may have taken it while the user decided.
     const {frameTree} = await cdp(target, "Page.getFrameTree");
-    if (frameTree.frame.loaderId !== doc || frameTree.frame.url !== url) throw new Error("The page changed since this key press was approved, so no key was pressed. Take a new snapshot.");
+    if (frameTree.frame.loaderId !== doc || frameTree.frame.url !== url || await focusedNode(target, frameTree) !== focused) throw new Error("The page changed since this key press was approved, so no key was pressed. Take a new snapshot.");
   }
   if (ref) {
     const {backendNodeId} = await resolveRef(target, lend, ref);

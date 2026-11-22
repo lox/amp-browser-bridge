@@ -171,7 +171,7 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
     if (!tab.allow_actions) throw new Error('This tab is lent read-only. Ask the user to turn on "Allow clicks, typing and navigation" in the extension popup.')
   }
   let url: URL | null = null
-  let d: { role?: string; name?: string; url: string; secret?: boolean; doc?: string } | null = null
+  let d: { role?: string; name?: string; url: string; secret?: boolean; doc?: string; focused?: number } | null = null
   if (tool === 'navigate' || tool === 'open_tab') {
     try {
       url = new URL(String(input.url))
@@ -182,7 +182,7 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
     // Without a ref (press on whatever has focus), describe returns only the page's URL.
     d = await call(target, ctx, 'describe', { ref: input.ref, tab: input.tab })
     // A key for whatever has focus goes only to the page the user approved it on.
-    if (tool === 'press' && !input.ref && d?.doc) Object.assign(input, { doc: d.doc, url: d.url })
+    if (tool === 'press' && !input.ref && d?.doc) Object.assign(input, { doc: d.doc, url: d.url, focused: d.focused })
     // A value the prompt hid stays hidden in the result, even if the field stops being a password.
     if (tool === 'fill' && d?.secret) input.secret = true
   }
