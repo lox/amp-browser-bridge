@@ -7,31 +7,20 @@
 
 <br>
 
-Your [Amp](https://ampcode.com) threads, even ones running in an orb in the cloud, can read a Chrome
-tab you lend them, logins included, and ask before they click or type. When a step needs a person,
-like a login, a 2FA code or a payment, the agent hands the tab back to you and waits.
+Works with [Amp](https://ampcode.com) threads on your Mac and in orbs in the cloud.
 
-Ask things like:
-
-- *"Read my lent tab and summarise the open issues."*
-- *"Fill in this form from the spec in the repo, but let me check it before submitting."*
-- *"Reproduce the bug on this page and take a screenshot of the error."*
+The agent asks before it clicks or types, and hands the tab back to you for logins, 2FA codes and
+payments.
 
 ## Why it's safe
 
-- **You choose the tabs.** The agent works only on the tab you lent and, if you turn them on, tabs
-  it opened itself. It has no tool for your other tabs, your cookies or your history.
-- **The lent tab is read-only and stays on its site** until you tick boxes in the popup that allow
-  clicks, typing and navigation, and other sites.
-- **Amp asks before each action** that changes a page, or once per site per thread if you say so.
-- **You take over for secrets.** During a handoff the agent can't read or act on that tab. Your
-  click on **Continue** gives it back.
-- **Nothing is open to your network.** The bridge listens on `127.0.0.1` only. Orbs reach it through
-  an Amp portal that needs your Amp sign-in, and every request is signed with the bridge's token,
-  which is never sent. The extension and the bridge prove to each other that they share a key before
-  the extension does anything.
-- **Stop anytime.** Click **Stop lending**, close the tab, or click Cancel on Chrome's "started
-  debugging" bar.
+- **You choose the tabs.** Only the tab you lend, and tabs Amp opens if you allow it.
+- **Read-only by default.** Clicks, typing and other sites each need a tick in the popup.
+- **Amp asks first** before each action that changes a page.
+- **You handle secrets.** During a handoff the agent can't read or act on the tab.
+- **Local only.** The bridge listens on `127.0.0.1`. Orbs reach it through an Amp portal that needs
+  your sign-in, and every request is signed.
+- **Stop anytime.** Click **Stop lending** or close the tab.
 
 The approval prompts are a convenience, not a hard limit: code running in your orb can skip them.
 [Security](#security) has that and the rest of what this does not protect against.
