@@ -1,6 +1,8 @@
 // Shared helpers for the end-to-end scripts. test/e2e/run.ts starts the bridge, the test page and
 // headless Chrome with the extension for each script, and sets E2E_HOME to the bridge's home.
 
+import { signRequest, verifyResponse } from '../../plugin/host'
+
 export const EXT = 'goknnphohomgekkahpdiphdfladfnmoc'
 export const PAGE = 'http://127.0.0.1:8765'
 export const BRIDGE = 'http://127.0.0.1:19989'
@@ -9,6 +11,18 @@ const dir = `${process.env.E2E_HOME}/.amp-browser-bridge`
 
 export const readToken = async () => (await Bun.file(`${dir}/token`).text()).trim()
 export const readPairingCode = async () => (await Bun.file(`${dir}/pairing-code`).text()).trim()
+
+// The bridge's HTTP API, signed like the plugin's requests; an answer without the bridge's signature fails the script.
+export async function api(path: string, thread: string | null, init: RequestInit = {}) {
+  const token = await readToken()
+  const method = init.method ?? 'GET', body = typeof init.body === 'string' ? init.body : ''
+  const auth = signRequest(token, { method, path, thread: thread ?? '', body })
+  const res = await fetch(BRIDGE + path, { ...init, headers: { 'x-bridge-auth': auth.header, 'content-type': 'application/json', ...(thread ? { 'x-amp-thread': thread } : {}) } })
+  const text = await res.text()
+  if (!verifyResponse(token, auth.nonce, res.status, text, res.headers.get('x-bridge-proof'))) throw new Error(`unsigned answer from the bridge (HTTP ${res.status})`)
+  return JSON.parse(text)
+}
+export const call = (thread: string, tool: string, args: object = {}) => api('/call', thread, { method: 'POST', body: JSON.stringify({ tool, args }) })
 
 let failed = 0
 export function check(name: string, ok: unknown, extra: unknown = '') {

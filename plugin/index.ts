@@ -177,6 +177,10 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
     } catch {
       throw new Error('navigate needs an absolute http(s) URL.')
     }
+    // The extension refuses these too; say so before asking the user to approve.
+    if (url.hostname === 'chromewebstore.google.com' || (url.hostname === 'chrome.google.com' && /^\/webstore(\/|$)/.test(url.pathname))) {
+      throw new Error("Chrome never lets extensions control Chrome Web Store pages (chromewebstore.google.com and chrome.google.com/webstore), so Amp can't open or use this page, now or on a retry. Ask the user to do this step in Chrome by hand.")
+    }
   } else {
     // Without a ref (press on whatever has focus), describe returns only the page's URL.
     d = await call(target, ctx, 'describe', { ref: input.ref, tab: input.tab })
@@ -255,7 +259,7 @@ const tools: { name: string; title: string; description: string; properties?: Re
   { name: 'fill', title: 'Fill field', description: "Like browser_type, but on password and one-time-code fields the value is hidden in the approval prompt and the result. Only enter credentials the user gave you; otherwise hand off. Needs the user's approval.", properties: { ref, value: { type: 'string' }, submit: { type: 'boolean' }, tab }, required: ['ref', 'value'] },
   { name: 'press', title: 'Press key', description: "Press a key such as Enter, Escape, Tab or ArrowDown, optionally with Shift+, Control+, Alt+ or Meta+. With ref it focuses that element first; without, the key goes to whatever has focus. Needs the user's approval.", properties: { key: { type: 'string' }, ref, tab }, required: ['key'] },
   { name: 'select', title: 'Select option', description: "Choose an option of a <select> by ref, by its value or label. For a custom dropdown, click it, then click the option. Needs the user's approval.", properties: { ref, value: { type: 'string', description: "The option's value or label." }, tab }, required: ['ref', 'value'] },
-  { name: 'navigate', title: 'Navigate', description: "Load an HTTP(S) URL in a tab and wait for it to load. Needs the user's approval; the lent tab stays on its lent site unless the user allowed other sites. Returns url and title; when the page is a bot check (Cloudflare, a captcha wall) or an \"access denied\" block page, also challenge and next: follow next, usually browser_handoff, and never retry the navigation.", properties: { url: { type: 'string' }, tab }, required: ['url'] },
+  { name: 'navigate', title: 'Navigate', description: "Load an HTTP(S) URL in a tab and wait for it to load. Needs the user's approval; the lent tab stays on its lent site unless the user allowed other sites. Returns url and title, plus download when the URL started a download instead of loading a page (the tab stays where it was); when the page is a bot check (Cloudflare, a captcha wall) or an \"access denied\" block page, also challenge and next: follow next, usually browser_handoff, and never retry the navigation.", properties: { url: { type: 'string' }, tab }, required: ['url'] },
   { name: 'handoff', title: 'Hand tab to user', description: 'Show the user a card on a tab and wait (up to 30 minutes) until they click Continue. Use for logins, 2FA, captchas, bot checks and payments; never solve a captcha or do those yourself, and don\'t retry a site that blocks you. If an earlier call failed while this thread\'s card was still showing, calling it again waits for that card instead of showing a new one.', properties: { message: { type: 'string', description: 'What the user should do, e.g. "Sign in to GitHub, then click Continue".' }, tab }, required: ['message'] },
 ]
 

@@ -267,8 +267,9 @@ async function run(message) {
     }
     const policy = await policyFor(message.thread, args.tab, true);
     tabId = policy.tabId;
-    // A reload of the extension detaches the debugger; attach again on first use.
-    if (policy.agent) await attach(tabId);
+    // A reload of the extension detaches the debugger; attach again on first use. Closing needs
+    // no debugger, so it works on a tab Chrome won't let it attach to, such as the Web Store.
+    if (policy.agent && message.tool !== "close_tab") await attach(tabId);
     await badge();
     if (message.tool === "close_tab" && (await session.get("handoff"))?.tabId === tabId) throw new Error("The user has the tab for a handoff. Wait for browser_handoff to return.");
     const result = message.tool === "close_tab" && policy.agent
@@ -276,6 +277,17 @@ async function run(message) {
       : await execute(policy, message.tool, args, effects);
     send({type: "result", id: message.id, result});
   } catch (error) {
+    // Chrome refuses, or detaches from, a tab once it reaches the Web Store (by a redirect, or the
+    // user went there). Whatever failed, the tab is there: say so. A navigation's outcome is then
+    // known; input that may have reached the page before it left stays unknown.
+    // Chrome detaches as the tab commits there, before tab.url changes: wait for the load first.
+    if (tabId != null && String(error?.message).includes("Detached while handling command")) await waitForLoad(tabId).catch(() => {});
+    // No URL in the message: a lent tab that left its site keeps where it went to itself.
+    const url = tabId != null && (await chrome.tabs.get(tabId).catch(() => null))?.url;
+    if (url && isWebStore(new URL(url))) {
+      send({type: "result", id: message.id, error: `The tab is on the Chrome Web Store. ${WEB_STORE}`, unknown: message.tool !== "navigate" && effects.sent});
+      return;
+    }
     send({type: "result", id: message.id, error: String(error?.message || error).slice(0, 1000), unknown: effects.sent});
   } finally {
     if (tabId != null) {
@@ -345,6 +357,10 @@ async function execute(lend, tool, args, effects) {
     default: throw new Error(`Unknown tool: ${tool}`);
   }
 }
+
+// Chrome never lets an extension script or debug its Web Store, and no setting changes that.
+const WEB_STORE = "Chrome never lets extensions control Chrome Web Store pages (chromewebstore.google.com and chrome.google.com/webstore), so Amp can't open or use this page, now or on a retry. Ask the user to do this step in Chrome by hand.";
+const isWebStore = (url) => url.hostname === "chromewebstore.google.com" || (url.hostname === "chrome.google.com" && /^\/webstore(\/|$)/.test(url.pathname));
 
 function originOf(url) {
   try {
@@ -709,12 +725,20 @@ async function waitFor(target, lend, args) {
 async function navigate(target, lend, raw, effects) {
   const url = new URL(raw);
   if (!["http:", "https:"].includes(url.protocol)) throw new Error("Only HTTP(S) URLs.");
+  if (isWebStore(url)) throw new Error(WEB_STORE);
   if (!lend.anyOrigin && url.origin !== lend.origin) throw new Error(`This tab is limited to ${lend.origin}. Ask the user to allow other sites in the extension popup.`);
   effects.sent = true;
   const result = await cdp(target, "Page.navigate", {url: url.toString()});
+  // A download ends the navigation with net::ERR_ABORTED, but it went ahead; the tab stays where it was.
+  if (result.isDownload) {
+    const tab = await chrome.tabs.get(target.tabId);
+    return {download: url.toString(), url: tab.url, title: tab.title};
+  }
   if (result.errorText) throw new Error(result.errorText);
   await waitForLoad(target.tabId);
   const tab = await chrome.tabs.get(target.tabId);
+  // A redirect into the Web Store: run() reports where the tab is.
+  if (tab.url && isWebStore(new URL(tab.url))) throw new Error(WEB_STORE);
   return withChallenge(lend, {url: tab.url, title: tab.title}, CHALLENGE_WAIT_MS);
 }
 
@@ -979,45 +1003,58 @@ async function openTab(thread, raw, effects) {
   if (!await agentTabsAllowed()) throw new Error("The user hasn't let Amp open its own tabs. Ask them to turn on \"Let Amp open its own tabs\" in the extension popup, or to lend a tab.");
   const url = new URL(raw);
   if (!["http:", "https:"].includes(url.protocol)) throw new Error("Only HTTP(S) URLs.");
+  if (isWebStore(url)) throw new Error(WEB_STORE);
   const win = await chrome.windows.getLastFocused({windowTypes: ["normal"]});
   effects.sent = true;
   const tab = await chrome.tabs.create({windowId: win.id, url: url.toString(), active: false});
-  // Join this window's group of Amp tabs if there is one; otherwise start one, collapsed.
-  const records = await getAgentTabs();
-  let groupId;
-  for (const record of Object.values(records)) {
-    const group = record.groupId >= 0 ? await chrome.tabGroups.get(record.groupId).catch(() => null) : null;
-    // A group the user renamed or recoloured is theirs now; start a new one rather than join it.
-    if (group?.windowId === win.id && group.title === GROUP_TITLE && group.color === "green") groupId = group.id;
-  }
   try {
-    if (groupId != null) await chrome.tabs.group({tabIds: [tab.id], groupId});
-    else {
-      groupId = await chrome.tabs.group({tabIds: [tab.id], createProperties: {windowId: win.id}});
-      await chrome.tabGroups.update(groupId, {title: GROUP_TITLE, color: "green", collapsed: true});
+    // Join this window's group of Amp tabs if there is one; otherwise start one, collapsed.
+    const records = await getAgentTabs();
+    let groupId;
+    for (const record of Object.values(records)) {
+      const group = record.groupId >= 0 ? await chrome.tabGroups.get(record.groupId).catch(() => null) : null;
+      // A group the user renamed or recoloured is theirs now; start a new one rather than join it.
+      if (group?.windowId === win.id && group.title === GROUP_TITLE && group.color === "green") groupId = group.id;
     }
+    try {
+      if (groupId != null) await chrome.tabs.group({tabIds: [tab.id], groupId});
+      else {
+        groupId = await chrome.tabs.group({tabIds: [tab.id], createProperties: {windowId: win.id}});
+        await chrome.tabGroups.update(groupId, {title: GROUP_TITLE, color: "green", collapsed: true});
+      }
+    } catch (error) {
+      // The group is what marks the tab as Amp's; without it, don't keep the tab.
+      throw new Error(`Could not put the new tab in an Amp tab group: ${error.message}`);
+    }
+    await updateAgentTabs((tabs) => void (tabs[tab.id] = {thread, lastUsed: Date.now(), groupId}));
+    // The user may have turned the setting off while the tab opened.
+    if (!await agentTabsAllowed()) throw new Error("The user turned off \"Let Amp open its own tabs\" while the tab opened.");
+    await attach(tab.id);
+    // Wait for the first load, so a snapshot right after sees the page.
+    for (let i = 0; i < 100; i++) {
+      const now = await chrome.tabs.get(tab.id).catch(() => null);
+      if (!now || now.status === "complete") break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const now = await chrome.tabs.get(tab.id);
+    // A redirect into the Web Store, after the debugger attached to the page before it.
+    if (now.url && isWebStore(new URL(now.url))) throw new Error("The tab reached the Web Store.");
+    await sendAgentTabs();
+    await badge();
+    return withChallenge({tabId: tab.id, anyOrigin: true}, {tab: tab.id, url: now.url || url.toString(), title: now.title || ""}, CHALLENGE_WAIT_MS);
   } catch (error) {
-    // The group is what marks the tab as Amp's; without it, don't keep the tab.
+    // A failed open returns no tab id, so the agent could neither use nor close the tab: close it here.
+    const last = await chrome.tabs.get(tab.id).catch(() => null);
     await chrome.tabs.remove(tab.id).catch(() => {});
-    throw new Error(`Could not put the new tab in an Amp tab group: ${error.message}`);
+    await forgetAgentTab(tab.id);
+    // Nothing is left open, so the outcome is known.
+    effects.sent = false;
+    // A redirect into the Web Store, which Chrome refuses to let the debugger attach to.
+    const onStore = [last?.url, last?.pendingUrl].some((u) => u && isWebStore(new URL(u)));
+    if (onStore || String(error.message).includes("extensions gallery cannot be scripted")) throw new Error(`${WEB_STORE} Amp closed the tab it opened.`);
+    if (!last) throw new Error(`The tab closed as it opened: either ${url} started a download, which closes a tab opened only for it, or the user closed the tab. Nothing is left open.`);
+    throw new Error(`${error.message} Amp closed the tab it opened.`);
   }
-  await updateAgentTabs((tabs) => void (tabs[tab.id] = {thread, lastUsed: Date.now(), groupId}));
-  // The user may have turned the setting off while the tab opened.
-  if (!await agentTabsAllowed()) {
-    await closeAgentTab(tab.id);
-    throw new Error("The user turned off \"Let Amp open its own tabs\" while the tab opened.");
-  }
-  await attach(tab.id);
-  // Wait for the first load, so a snapshot right after sees the page.
-  for (let i = 0; i < 100; i++) {
-    const now = await chrome.tabs.get(tab.id).catch(() => null);
-    if (!now || now.status === "complete") break;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const now = await chrome.tabs.get(tab.id);
-  await sendAgentTabs();
-  await badge();
-  return withChallenge({tabId: tab.id, anyOrigin: true}, {tab: tab.id, url: now.url || url.toString(), title: now.title || ""}, CHALLENGE_WAIT_MS);
 }
 
 /** Drops a tab from Amp's tabs without closing it. */

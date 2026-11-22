@@ -151,12 +151,12 @@ The common cases:
 | Tool | What it does |
 | --- | --- |
 | `browser_status` | Connection, lent tab, who holds it, whether this thread's last handoff is still waiting or you clicked **Continue**, and what to do next |
-| `browser_open_tab`, `browser_close_tab` | Open a background tab of the thread's own, after your approval, and close it |
+| `browser_open_tab`, `browser_close_tab` | Open a background tab of the thread's own, after your approval, and close it. If the new tab can't be used, it is closed again rather than left open |
 | `browser_snapshot` | Accessibility outline with refs (`e12`) for the action tools |
 | `browser_screenshot` | JPEG of the viewport |
 | `browser_wait_for` | Wait (up to 20 seconds) for text, a URL or an element by role and name to appear |
 | `browser_scroll` | Scroll by a number of pixels |
-| `browser_click`, `browser_type`, `browser_navigate` | Act on the page, after your approval. `browser_navigate` waits for the page and reports a bot check or block page |
+| `browser_click`, `browser_type`, `browser_navigate` | Act on the page, after your approval. `browser_navigate` waits for the page, reports a bot check or block page, and reports a URL that starts a download as `download` rather than an error |
 | `browser_fill` | Like `browser_type`, but hides the value of password and one-time-code fields in the approval prompt and the result |
 | `browser_press` | Press a key such as Enter, Escape or Tab, on a ref or on whatever has focus, after your approval |
 | `browser_select` | Choose an option of a `<select>` by value or label, after your approval |
@@ -165,6 +165,10 @@ The common cases:
 | `browser_bridge_publish` | On the Mac only: expose the bridge to your orbs; it republishes itself on every start |
 
 Page tools take an optional `tab` (from `browser_open_tab`); without it they use the lent tab.
+
+Chrome never lets extensions control Chrome Web Store pages (`chromewebstore.google.com` and
+`chrome.google.com/webstore`). The tools refuse those URLs, and one of Amp's tabs that a redirect
+or a click takes there says so; a lent tab you take there stops being lent. Do those steps by hand.
 
 ## Security
 

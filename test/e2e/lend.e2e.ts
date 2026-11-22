@@ -1,20 +1,8 @@
 // A lend from start to finish, driven over the bridge's HTTP API as two threads: pairing, read-only,
 // the lease, a worker restart, click and type, overlays, the site limit, stale refs and a handoff.
-import { BRIDGE, PAGE, cdp, check, done, evaluate, pageTarget, message, pair, readToken, restartWorker, trustedClick, until, wakeWorker } from './lib'
-import { signRequest, verifyResponse } from '../../plugin/host'
+import { PAGE, api, call, cdp, check, done, evaluate, pageTarget, message, pair, restartWorker, trustedClick, until, wakeWorker } from './lib'
 
 const A = 'T-00000000-0000-0000-0000-00000000000a', B = 'T-00000000-0000-0000-0000-00000000000b'
-const token = await readToken()
-// Signed like the plugin's requests; an answer without the bridge's signature fails the script.
-const api = async (path: string, thread: string | null, init: RequestInit = {}) => {
-  const method = init.method ?? 'GET', body = typeof init.body === 'string' ? init.body : ''
-  const auth = signRequest(token, { method, path, thread: thread ?? '', body })
-  const res = await fetch(BRIDGE + path, { ...init, headers: { 'x-bridge-auth': auth.header, 'content-type': 'application/json', ...(thread ? { 'x-amp-thread': thread } : {}) } })
-  const text = await res.text()
-  if (!verifyResponse(token, auth.nonce, res.status, text, res.headers.get('x-bridge-proof'))) throw new Error(`unsigned answer from the bridge (HTTP ${res.status})`)
-  return JSON.parse(text)
-}
-const call = (thread: string, tool: string, args: object = {}) => api('/call', thread, { method: 'POST', body: JSON.stringify({ tool, args }) })
 const refOf = (s: any, pattern: RegExp) => s.outline.split('\n').find((l: string) => pattern.test(l))?.match(/\[(e\d+)\]/)?.[1]
 
 let { send: sw } = await wakeWorker()
