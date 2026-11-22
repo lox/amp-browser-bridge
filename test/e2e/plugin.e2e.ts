@@ -1,6 +1,6 @@
 // Runs the real plugin in its client role against the bridge: approval dialogs, per-site
 // allowances, the screenshot fallback, and handoff polling and cancelling.
-import { BRIDGE, PAGE, cdp, check, done, evaluate, pageTarget, message, pair, readToken, trustedClick, until, wakeWorker } from './lib'
+import { BRIDGE, PAGE, cdp, check, done, evaluate, pageTarget, message, pair, readToken, trustedClick, until, wakeWorker, showTab } from './lib'
 
 process.env.AMP_BROWSER_BRIDGE_ROLE = 'client'
 process.env.BROWSER_BRIDGE_URL = BRIDGE
@@ -28,6 +28,8 @@ check('extension pairs and connects', await until(async () => JSON.parse((await 
 const lend = (tabId: number) => message({ action: 'lend', tabId: tabId })
 const permissions = (allowActions: boolean, anyOrigin: boolean) => message({ action: 'permissions', allowActions: allowActions, anyOrigin: anyOrigin })
 const tabId = await evaluate(sw, `chrome.tabs.query({url: '${PAGE}/*'}).then(t => t[0].id)`)
+// A person lends the tab they're looking at; Chrome drops input to a tab that was never shown.
+await showTab(`${PAGE}/`)
 await lend(tabId)
 await message({ action: 'release' })
 
@@ -65,6 +67,7 @@ for (let i = 0; i < 50 && !rect; i++) {
   rect = JSON.parse((await page('Runtime.evaluate', { expression: 'JSON.stringify(document.getElementById("__amp_handoff")?.getBoundingClientRect() ?? null)', returnByValue: true })).result.value)
 }
 await Bun.sleep(1500)
+await page('Page.bringToFront')
 await trustedClick(page, rect.left + 30, rect.bottom - 26)
 const h = await handoff
 check('handoff tool returns after Continue', JSON.parse(h.ok ?? '{}').continued === true, h)

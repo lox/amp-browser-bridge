@@ -1,3 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 bun install --frozen-lockfile
+# bun run e2e runs a headed Chrome; in an orb it needs a virtual display.
+if ! command -v Xvfb >/dev/null; then
+  sudo apt-get update -qq
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends xvfb
+fi
