@@ -188,7 +188,7 @@ function how(t: T) {
     <rect x="356" y="168" width="136" height="64" rx="12" fill="${t.card}" stroke="${t.line2}" filter="url(#sh)"/>
     ${lock(372, 180, t.ink)}
     ${text(392, 196, "Amp portal", `${SANS} font-size="13.5" font-weight="700" fill="${t.ink}"`)}
-    ${text(372, 218, "sign-in + token", `${SANS} font-size="12" fill="${t.muted}"`)}
+    ${text(372, 218, "Amp sign-in", `${SANS} font-size="12" fill="${t.muted}"`)}
   </g>
   ${arrow("M 298 200 H 352", t.ink)}
   ${text(325, 190, "https", `${MONO} font-size="11" fill="${t.muted}" text-anchor="middle"`)}
@@ -210,9 +210,9 @@ function how(t: T) {
   <!-- steps -->
   <line x1="30" y1="372" x2="970" y2="372" stroke="${t.line2}"/>
   ${step(30, 404, "1", "A thread calls a tool", ["browser_snapshot, browser_click…", "from an orb or your Mac"])}
-  ${step(270, 404, "2", "The portal lets it in", ["only with your Amp sign-in", "and the bridge's token"])}
-  ${step(510, 404, "3", "The extension acts", ["on the one tab you lent,", "after you approve"])}
-  ${step(750, 404, "4", "Logins come back to you", ["the agent can't see the tab", "until you click Continue"], t.orange)}
+  ${step(270, 404, "2", "Two checks let it in", ["your Amp sign-in at the portal,", "a signed request at the bridge"])}
+  ${step(510, 404, "3", "The extension acts", ["on a tab you lent or Amp opened;", "clicks and typing need your OK"])}
+  ${step(750, 404, "4", "Logins come back to you", ["the agent can't see the tab", "while it waits for you"], t.orange)}
   `);
 }
 
