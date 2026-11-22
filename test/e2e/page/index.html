@@ -1,0 +1,11 @@
+<!doctype html><title>Bridge test page</title>
+<h1>Bridge test</h1>
+<form onsubmit="event.preventDefault(); document.getElementById('out').textContent = 'Submitted: ' + document.getElementById('q').value">
+<label>Search <input id="q" value="old"></label>
+<button type="button" onclick="document.getElementById('out').textContent='Clicked!'">Press me</button>
+</form>
+<p id="out">Nothing yet</p>
+<a href="/other.html">Other page</a>
+<button id="covered" onclick="document.getElementById('out').textContent='Covered clicked!'">Covered</button>
+<div id="overlay" style="position:fixed;inset:0;background:transparent;display:none" onclick="document.getElementById('out').textContent='Overlay got it'"></div>
+<label><input type="checkbox" id="cb" style="position:absolute;clip:rect(0 0 0 0);width:1px;height:1px;margin:0"><span style="display:inline-block;padding:4px">Agree</span></label>
