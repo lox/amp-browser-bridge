@@ -167,8 +167,8 @@ The common cases:
 Page tools take an optional `tab` (from `browser_open_tab`); without it they use the lent tab.
 
 Chrome never lets extensions control Chrome Web Store pages (`chromewebstore.google.com` and
-`chrome.google.com/webstore`). The tools refuse those URLs, and a tab that ends up there, by a
-redirect or because you went there, says so; do those steps by hand.
+`chrome.google.com/webstore`). The tools refuse those URLs, and one of Amp's tabs that a redirect
+or a click takes there says so; a lent tab you take there stops being lent. Do those steps by hand.
 
 ## Security
 

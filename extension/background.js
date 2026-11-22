@@ -278,13 +278,14 @@ async function run(message) {
     send({type: "result", id: message.id, result});
   } catch (error) {
     // Chrome refuses, or detaches from, a tab once it reaches the Web Store (by a redirect, or the
-    // user went there). Whatever failed, the tab is there: say so, as a known outcome.
+    // user went there). Whatever failed, the tab is there: say so. A navigation's outcome is then
+    // known; input that may have reached the page before it left stays unknown.
     // Chrome detaches as the tab commits there, before tab.url changes: wait for the load first.
     if (tabId != null && String(error?.message).includes("Detached while handling command")) await waitForLoad(tabId).catch(() => {});
     // No URL in the message: a lent tab that left its site keeps where it went to itself.
     const url = tabId != null && (await chrome.tabs.get(tabId).catch(() => null))?.url;
     if (url && isWebStore(new URL(url))) {
-      send({type: "result", id: message.id, error: `The tab is on the Chrome Web Store. ${WEB_STORE}`, unknown: false});
+      send({type: "result", id: message.id, error: `The tab is on the Chrome Web Store. ${WEB_STORE}`, unknown: message.tool !== "navigate" && effects.sent});
       return;
     }
     send({type: "result", id: message.id, error: String(error?.message || error).slice(0, 1000), unknown: effects.sent});
