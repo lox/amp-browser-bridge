@@ -14,12 +14,14 @@ if (!process.env.PUBLISH_E2E_HOME) {
   const bin = join(home, 'bin')
   mkdirSync(join(home, '.amp-browser-bridge'), { recursive: true })
   mkdirSync(bin)
-  // Answers like the real CLI: `orb portal` prints the URL, `runner list --json` prints $HOME/runners.json.
+  // Answers like the real CLI: `orb portal` prints the URL, `runner list --json` prints $HOME/runners.json,
+  // and every thread runs on the runner "mac".
   writeFileSync(join(bin, 'amp'), `#!/bin/sh
 echo "$PWD $*" >> "$HOME/amp.log"
 case "$1 $2" in
   "orb portal") echo "Portal: ${PORTAL}/" ;;
   "runner list") cat "$HOME/runners.json" ;;
+  "threads export") echo '{"env":{"initial":{"runnerID":"mac"}}}' ;;
   "secrets set") cat > /dev/null ;;
 esac
 `)
@@ -37,7 +39,8 @@ esac
 
 const home = process.env.PUBLISH_E2E_HOME
 const dir = join(home, '.amp-browser-bridge')
-const runners = (served: string[]) => writeFileSync(join(home, 'runners.json'), JSON.stringify({ runners: [{ runnerId: 'mac', workingDirectory: served[0], serveCwd: true, directories: served.slice(1).map((path) => ({ path })) }] }))
+const runner = (runnerId: string, served: string[]) => ({ runnerId, workingDirectory: served[0], serveCwd: true, directories: served.slice(1).map((path) => ({ path })) })
+const runners = (served: string[], ...others: ReturnType<typeof runner>[]) => writeFileSync(join(home, 'runners.json'), JSON.stringify({ runners: [runner('mac', served), ...others] }))
 const calls = () => readFileSync(join(home, 'amp.log'), 'utf8').trim().split('\n')
 const portals = () => calls().filter((c) => c === `${dir} orb portal 19979 --thread ${THREAD} --title Browser bridge --description Amp browser bridge; requires its token`)
 runners(['/elsewhere'])
@@ -51,13 +54,14 @@ await plugin({ registerTool: (t: any) => tools.set(t.name, t), logger: { log: (m
 check('republishes on start, from the bridge directory, through the published thread', await until(async () => portals().length >= 1, 50), calls())
 check('republishes again on its timer', await until(async () => portals().length >= 4, 60), portals().length)
 check('republishing the same URL leaves the secrets alone', !calls().some((c) => c.includes('secrets set')), calls())
-check('republishing warns when no runner serves the bridge directory', logs.some((m) => m.includes(`amp runner dirs add ${dir}`)), logs)
+check('republishing warns when no runner serves the bridge directory', logs.some((m) => m.includes(`amp runner dirs add --runner-id mac '${dir}'`)), logs)
 
 const dialogs: any[] = []
 const publish = async () => JSON.parse(await tools.get('browser_bridge_publish').execute({}, { thread: { id: 'T-00000000-0000-0000-0000-0000000000b2' }, ui: { confirm: async (o: any) => (dialogs.push(o), true) } }))
 const unserved = await publish()
-check('publish returns the portal URL and the unserved warning', unserved.portal_url === PORTAL && unserved.warning?.includes(`amp runner dirs add ${dir}`), unserved)
-check('publishing on request updates both secrets', calls().filter((c) => c.includes('secrets set')).length === 2, calls())
+check('publish returns the portal URL and the unserved warning', unserved.portal_url === PORTAL && unserved.warning?.includes(`amp runner dirs add --runner-id mac '${dir}'`), unserved)
+// A timer republish racing this write may set them again, so check that both were set, not how often.
+check('publishing on request updates both secrets', ['BROWSER_BRIDGE_TOKEN', 'BROWSER_BRIDGE_URL'].every((name) => calls().some((c) => c.includes('secrets set') && c.includes(name))), calls())
 const wording = [tools.get('browser_bridge_publish').description, dialogs[0]?.message, unserved.note].join('\n')
 check('nothing asks to keep the publishing thread unarchived', dialogs[0]?.requireHuman === true && !/unarchiv|not to archive/i.test(wording), wording)
 runners(['/elsewhere', home])
@@ -68,6 +72,8 @@ writeFileSync(join(home, 'runners.json'), JSON.stringify({ runners: [] }))
 check('no warning when no runner reports its directories', (await publish()).warning === undefined)
 runners([`${dir}-other`])
 check('a sibling directory with the same prefix does not count as served', (await publish()).warning !== undefined)
+runners(['/elsewhere'], runner('other', [home]))
+check('another runner serving it does not hide the warning for the thread\'s own runner', (await publish()).warning?.includes('runner mac'))
 
 // A startup republish that fails four times removes published.json; the timer must still recover.
 rmSync(join(dir, 'published.json'))

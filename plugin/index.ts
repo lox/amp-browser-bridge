@@ -104,20 +104,28 @@ async function ampCLI(args: string[], stdin?: string) {
 
 /**
  * A runner portal published from a directory the runner doesn't serve answers 503 within seconds.
- * Returns a warning when no runner on this computer serves the bridge's directory, and nothing
- * when one does or when no runner reports its directories.
+ * Returns a warning when the runner that runs `thread` doesn't serve the bridge's directory, and
+ * nothing when it does or when no runner reports its directories. When the thread's runner is
+ * unknown, it checks every runner on this computer.
  */
-async function unservedWarning() {
-  let runners: { workingDirectory: string; serveCwd: boolean; directories: { path: string }[] }[]
+async function unservedWarning(thread: string) {
+  let runners: { runnerId: string; workingDirectory: string; serveCwd: boolean; directories: { path: string }[] }[]
   try {
     runners = JSON.parse(await ampCLI(['runner', 'list', '--json'])).runners ?? []
   } catch {
     return undefined
   }
+  let owner: string | undefined
+  try {
+    owner = JSON.parse(await ampCLI(['threads', 'export', thread])).env?.initial?.runnerID
+  } catch {}
+  const mine = runners.filter((r) => r.runnerId === owner)
+  if (mine.length) runners = mine
   if (!runners.length) return undefined
   const served = runners.flatMap((r) => [...(r.serveCwd ? [r.workingDirectory] : []), ...r.directories.map((d) => d.path)])
   if (served.some((p) => dir === p || dir.startsWith(p.replace(/\/$/, '') + '/'))) return undefined
-  return `No runner on this computer serves ${dir}, so its portal stops answering within seconds. Serve it with \`amp runner dirs add ${dir}\` (or run the runner from a directory that contains it), then publish again.`
+  const runner = mine.length ? ` runner ${owner}` : ' runner on this computer'
+  return `The${runner} doesn't serve ${dir}, so its portal stops answering within seconds. Serve it with \`amp runner dirs add${mine.length ? ` --runner-id ${owner}` : ''} '${dir}'\` (or run the runner from a directory that contains it), then publish again.`
 }
 
 /**
@@ -137,7 +145,7 @@ async function publish(thread: string, force: boolean): Promise<Published & { wa
   }
   const published = { url, thread, at: new Date().toISOString() }
   writePublished(dir, published)
-  return { ...published, warning: await unservedWarning() }
+  return { ...published, warning: await unservedWarning(thread) }
 }
 
 /** How often the bridge publishes its portal again; BROWSER_BRIDGE_REPUBLISH_MS is for tests. */
