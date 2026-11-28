@@ -13,8 +13,8 @@ afterEach(() => {
   stops = []
 })
 
-function setupRelay(forwardTimeoutMs = 2000, maxUnregistered?: number) {
-  const r = startRelay({ port: 0, forwardTimeoutMs, maxUnregistered })
+function setupRelay(forwardTimeoutMs = 2000, extra: Record<string, unknown> = {}) {
+  const r = startRelay({ port: 0, forwardTimeoutMs, ...extra })
   stops.push(r.stop)
   return { r, base: `http://127.0.0.1:${r.server.port}` }
 }
@@ -185,8 +185,8 @@ test('disconnect mid-flight returns 502 dropped, and unresponsive browser times 
   expect(await r2.json()).toEqual({ dropped: true })
 })
 
-test('enforces 64 KiB WebSocket frame cap, chunks large responses, and caps unregistered sockets', async () => {
-  const { base } = setupRelay(2000, 2)
+test('enforces 64 KiB WebSocket frame cap, chunks large responses, and caps sockets and buffered bytes', async () => {
+  const { r, base } = setupRelay(2000, { maxUnregistered: 2, maxSocketsPerIp: 3, maxGlobalBufferChars: 250_000, trustFlyHeader: true })
 
   // Unauthenticated >64 KiB WebSocket frames are rejected at the socket layer (1009 Message Too Big).
   {
@@ -198,22 +198,40 @@ test('enforces 64 KiB WebSocket frame cap, chunks large responses, and caps unre
   }
 
   // Unregistered connection cap blocks socket floods with 503 until slots free up or register.
-  const idle1 = new WebSocket(base.replace('http', 'ws') + '/ext', { headers: { origin: ORIGIN } } as any)
-  const idle2 = new WebSocket(base.replace('http', 'ws') + '/ext', { headers: { origin: ORIGIN } } as any)
+  const idle1 = new WebSocket(base.replace('http', 'ws') + '/ext', { headers: { origin: ORIGIN, 'fly-client-ip': '203.0.113.10' } } as any)
+  const idle2 = new WebSocket(base.replace('http', 'ws') + '/ext', { headers: { origin: ORIGIN, 'fly-client-ip': '203.0.113.11' } } as any)
   stops.push(() => {
     idle1.close()
     idle2.close()
   })
-  await Promise.all([new Promise((r) => (idle1.onopen = r)), new Promise((r) => (idle2.onopen = r))])
-  expect((await fetch(`${base}/ext`, { headers: { origin: ORIGIN } })).status).toBe(503)
+  await Promise.all([new Promise((res) => (idle1.onopen = res)), new Promise((res) => (idle2.onopen = res))])
+  expect((await fetch(`${base}/ext`, { headers: { origin: ORIGIN, 'fly-client-ip': '203.0.113.12' } })).status).toBe(503)
   idle1.close()
   idle2.close()
   await Bun.sleep(30)
 
-  // Large screenshot-sized (>150 KB) encrypted responses traverse the 64 KiB frame cap via res_part chunks.
+  // Per-IP socket limit applies across REGISTERED sockets too, so self-generated gates from one IP cannot exhaust the server.
+  const regSockets: WebSocket[] = []
+  for (let i = 0; i < 3; i++) {
+    const s = generateSecret()
+    const root = await Browser.deriveRoot(s)
+    const sess = await Browser.createSession(root)
+    const ws = new WebSocket(base.replace('http', 'ws') + '/ext', { headers: { origin: ORIGIN, 'fly-client-ip': '198.51.100.7' } } as any)
+    regSockets.push(ws)
+    stops.push(() => ws.close())
+    const done = new Promise<void>((res) => (ws.onmessage = (e) => JSON.parse(String(e.data)).type === 'registered' && res()))
+    ws.onopen = () => ws.send(JSON.stringify({ type: 'register', gate: sess.gate, banner: sess.banner }))
+    await done
+  }
+  // 4th socket from the same IP is rejected with 429 even though the first 3 registered, while another IP still connects!
+  expect((await fetch(`${base}/ext`, { headers: { origin: ORIGIN, 'fly-client-ip': '198.51.100.7' } })).status).toBe(429)
+  for (const ws of regSockets) ws.close()
+  await Bun.sleep(30)
+
+  // Large screenshot-sized (>150 KB) encrypted responses traverse the 64 KiB frame cap via res_part chunks, and release buffer accounting.
   const secret = generateSecret()
   const root = deriveRoot(secret)
-  const bigImage = 'J'.repeat(160_000)
+  const bigImage = 'J'.repeat(140_000)
   const browser = await connectFakeBrowser(base, secret, () => ({
     status: 200,
     body: JSON.stringify({ result: { mime_type: 'image/jpeg', data: bigImage } }),
@@ -229,4 +247,22 @@ test('enforces 64 KiB WebSocket frame cap, chunks large responses, and caps unre
   const opened = sealed.openResponse(ct)
   expect(JSON.parse(opened!.body).result.data).toBe(bigImage)
   expect(browser.wireFrames.filter((f) => f.includes('"res_part"')).length).toBeGreaterThanOrEqual(4)
+  expect(r.stats().globalBufferedChars).toBe(0)
+
+  // Exceeding the global response buffer budget drops the oversized response with 502 and frees all buffered bytes immediately.
+  const secret2 = generateSecret()
+  const root2 = deriveRoot(secret2)
+  const tooBigBrowser = await connectFakeBrowser(base, secret2, () => ({
+    status: 200,
+    body: JSON.stringify({ result: { data: 'Z'.repeat(260_000) } }),
+  }))
+  const sealedTooBig = sealRequest(root2, tooBigBrowser.session.banner, { thread: THREAD, method: 'POST', path: '/call', body: '{"tool":"screenshot"}' })
+  const resTooBig = await fetch(`${base}/forward`, {
+    method: 'POST',
+    headers: { 'x-bridge-gate': root2.gate, 'content-type': 'application/json' },
+    body: JSON.stringify(sealedTooBig.envelope),
+  })
+  expect(resTooBig.status).toBe(502)
+  expect(r.stats().globalBufferedChars).toBe(0)
+  expect(r.stats().globalPending).toBe(0)
 })
