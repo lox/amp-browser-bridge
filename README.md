@@ -53,7 +53,7 @@ Popup controls:
 - **Allow other sites** - lets Amp navigate to other sites. If this is off and you navigate away yourself, Amp is blocked until you go back.
 - **Release to other threads** - frees the tab from the current thread (one thread holds it at a time, with a 10-minute idle timeout) without ending the lend. **Stop lending** disconnects the tab.
 
-If a modal or banner covers the element Amp tries to use, the action fails instead of clicking whatever is on top. A checkbox or radio button drawn over by its own label, or by a picture beside it in the same wrapper (as Synology DSM does), still counts as uncovered.
+If a modal or banner covers the element Amp tries to use, the action fails instead of clicking whatever is on top. A checkbox or radio button drawn over by its own label, or by Synology DSM's checkbox picture beside it, still counts as uncovered.
 
 ### Background tabs
 

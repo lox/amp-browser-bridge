@@ -71,8 +71,8 @@ check('page shows the submission', snap.outline.includes('"Submitted: hello"'), 
   const dsm = await call(A, 'click', { ref: refOf(s5, /checkbox "Enable Recycle Bin"/) })
   const s6 = (await call(A, 'snapshot')).result
   check('checkbox under its own sprite (Synology DSM) can be clicked', dsm.result && /checkbox "Enable Recycle Bin" \(checked\)/.test(s6.outline), { dsm, o: s6.outline })
-  const linked = await call(A, 'click', { ref: refOf(s6, /checkbox "Accept terms"/) })
-  check('a link over a checkbox in its wrapper still covers it', /covers/.test(linked.error ?? '') && !(await call(A, 'snapshot')).result.outline.includes('Link got it'), linked)
+  const sibling = await call(A, 'click', { ref: refOf(s6, /checkbox "Accept terms"/) })
+  check('an empty clickable sibling over a checkbox still covers it', /covers/.test(sibling.error ?? '') && !(await call(A, 'snapshot')).result.outline.includes('Sibling got it'), sibling)
   const tb = await call(A, 'click', { ref: refOf(s5, /textbox "Search"/) })
   check('click on a plain text input', tb.result, tb)
 }
