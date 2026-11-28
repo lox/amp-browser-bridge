@@ -506,25 +506,49 @@ async function describe(target, lend, tab, ref) {
  * action approved for something else, and nothing acts on an element the user can't see.
  */
 async function uncovered(target, backendNodeId, ref) {
-  await cdp(target, "DOM.scrollIntoViewIfNeeded", {backendNodeId});
-  const {model} = await cdp(target, "DOM.getBoxModel", {backendNodeId});
-  const q = model.content;
-  const x = (q[0] + q[2] + q[4] + q[6]) / 4;
-  const y = (q[1] + q[3] + q[5] + q[7]) / 4;
-  // The box is relative to the visual viewport, but getNodeForLocation takes document coordinates:
-  // add where that viewport is, or on a scrolled or pinch-zoomed page the check looks elsewhere.
-  const {cssVisualViewport: view} = await cdp(target, "Page.getLayoutMetrics");
-  const hit = await cdp(target, "DOM.getNodeForLocation", {x: Math.round(x + view.pageX), y: Math.round(y + view.pageY), includeUserAgentShadowDOM: false, ignorePointerEventsNone: false});
-  const inside = await isolated(target, backendNodeId, function (h) {
-    for (let n = h; n; n = n.parentNode || n.host) if (n === this) return true;
-    // Custom checkboxes and switches hide the input under its label; the browser forwards that click.
-    if (h.closest?.("label")?.control === this) return true;
-    // Synology DSM draws the box as a sprite beside the input, on top of it; a person clicks that.
-    // Only DSM's own sprite counts: an empty clickable sibling elsewhere looks no different.
-    return (this.type === "checkbox" || this.type === "radio") && h.parentElement === this.parentElement && !!h.classList?.contains(`syno-ux-${this.type}-icon`);
-  }, {node: hit.backendNodeId});
-  if (!inside) throw new Error(`Something else covers ${ref} (a dialog or banner?). Take a new snapshot.`);
-  return {x, y};
+  // What's on top at the centre of `node` counts when it is the element, or a plain part of one of
+  // its labels: the browser forwards a label's click to its control, but not a link's inside it.
+  const onTop = async (node) => {
+    await cdp(target, "DOM.scrollIntoViewIfNeeded", {backendNodeId: node});
+    const {model} = await cdp(target, "DOM.getBoxModel", {backendNodeId: node});
+    const q = model.content;
+    const x = (q[0] + q[2] + q[4] + q[6]) / 4;
+    const y = (q[1] + q[3] + q[5] + q[7]) / 4;
+    // The box is relative to the visual viewport, but getNodeForLocation takes document coordinates:
+    // add where that viewport is, or on a scrolled or pinch-zoomed page the check looks elsewhere.
+    const {cssVisualViewport: view} = await cdp(target, "Page.getLayoutMetrics");
+    const hit = await cdp(target, "DOM.getNodeForLocation", {x: Math.round(x + view.pageX), y: Math.round(y + view.pageY), includeUserAgentShadowDOM: false, ignorePointerEventsNone: false});
+    const ok = await isolated(target, backendNodeId, function (h) {
+      for (let n = h; n; n = n.parentNode || n.host) if (n === this) return true;
+      const label = h.closest?.("label");
+      const control = h.closest?.("a[href], button, input, select, textarea, [tabindex]");
+      return label?.control === this && !(control && label.contains(control));
+    }, {node: hit.backendNodeId});
+    return ok && {x, y};
+  };
+  const at = await onTop(backendNodeId);
+  if (at) return at;
+  // Custom checkboxes and radios often draw a picture of the box over the real one, which nothing
+  // can tell apart from an overlay. Their label is the other place a person clicks them.
+  for (const label of await labelsOf(target, backendNodeId)) {
+    const at = await onTop(label).catch(() => false);
+    if (at) return at;
+  }
+  throw new Error(`Something else covers ${ref} (a dialog or banner?). Take a new snapshot.`);
+}
+
+/** Backend node IDs of a checkbox's or radio button's labels, read in an isolated world; none for other elements. */
+async function labelsOf(target, backendNodeId) {
+  const {frameTree} = await cdp(target, "Page.getFrameTree");
+  const {executionContextId} = await cdp(target, "Page.createIsolatedWorld", {frameId: frameTree.frame.id, worldName: "amp-browser-bridge"});
+  const {object} = await cdp(target, "DOM.resolveNode", {backendNodeId, executionContextId});
+  const {result} = await cdp(target, "Runtime.callFunctionOn", {objectId: object.objectId, functionDeclaration: "function () { return this.type === 'checkbox' || this.type === 'radio' ? [...this.labels] : []; }"});
+  const {result: items} = await cdp(target, "Runtime.getProperties", {objectId: result.objectId, ownProperties: true});
+  const ids = [];
+  for (const item of items) {
+    if (/^\d+$/.test(item.name)) ids.push((await cdp(target, "DOM.describeNode", {objectId: item.value.objectId})).node.backendNodeId);
+  }
+  return ids;
 }
 
 /** The backend node ID of the element with focus (inside shadow roots too), read in an isolated world. */

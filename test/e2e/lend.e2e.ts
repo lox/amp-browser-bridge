@@ -70,11 +70,15 @@ check('page shows the submission', snap.outline.includes('"Submitted: hello"'), 
   await pg('Runtime.evaluate', { expression: 'document.getElementById("overlay").style.display = "none"' })
   const dsm = await call(A, 'click', { ref: refOf(s5, /checkbox "Enable Recycle Bin"/) })
   const s6 = (await call(A, 'snapshot')).result
-  check('checkbox under its own sprite (Synology DSM) can be clicked', dsm.result && /checkbox "Enable Recycle Bin" \(checked\)/.test(s6.outline), { dsm, o: s6.outline })
+  const shown = (await pg('Runtime.evaluate', { expression: 'document.getElementById("dsm-icon").classList.contains("on")', returnByValue: true })).result.value
+  check('checkbox drawn over by its own picture (Synology DSM) is clicked through its label', dsm.result && shown && /checkbox "Enable Recycle Bin" \(checked\)/.test(s6.outline), { dsm, shown, o: s6.outline })
   const sibling = await call(A, 'click', { ref: refOf(s6, /checkbox "Accept terms"/) })
-  check('an empty clickable sibling over a checkbox still covers it', /covers/.test(sibling.error ?? '') && !(await call(A, 'snapshot')).result.outline.includes('Sibling got it'), sibling)
-  const hidden = await call(A, 'click', { ref: refOf(s6, /button "Hidden button"/) })
-  check("DSM's sprite class over a button still covers it", /covers/.test(hidden.error ?? '') && !(await call(A, 'snapshot')).result.outline.includes('Hidden button clicked'), hidden)
+  const s7 = (await call(A, 'snapshot')).result
+  check('a clickable sibling over a checkbox gets nothing; its label ticks the box', sibling.result && /checkbox "Accept terms" \(checked\)/.test(s7.outline) && !s7.outline.includes('Sibling got it'), { sibling, o: s7.outline })
+  const tos = await call(A, 'click', { ref: refOf(s7, /checkbox "Read the terms"/) })
+  check('a covered checkbox whose label is a link is refused', /covers/.test(tos.error ?? '') && !(await call(A, 'snapshot')).result.outline.includes('Link got it'), tos)
+  const hidden = await call(A, 'click', { ref: refOf(s7, /button "Hidden button"/) })
+  check('a covered button, with no label to fall back on, is refused', /covers/.test(hidden.error ?? '') && !(await call(A, 'snapshot')).result.outline.includes('Hidden button clicked'), hidden)
   const tb = await call(A, 'click', { ref: refOf(s5, /textbox "Search"/) })
   check('click on a plain text input', tb.result, tb)
 }
