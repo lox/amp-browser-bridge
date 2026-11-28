@@ -432,7 +432,9 @@ async function snapshot(target, lend, tab) {
     line += role === "StaticText" ? JSON.stringify(name) : `${role}${name ? ` ${JSON.stringify(name)}` : ""}`;
     // Snapshots leave out what's typed in fields; the agent sees the field, not its contents.
     for (const p of node.properties || []) {
-      if (["checked", "disabled", "expanded", "selected"].includes(p.name) && p.value?.value) line += ` (${p.name})`;
+      // checked is a tristate string, so "false" is truthy: only "true" is checked.
+      if (p.name === "checked") line += p.value?.value === "true" ? " (checked)" : p.value?.value === "mixed" ? " (mixed)" : "";
+      else if (["disabled", "expanded", "selected"].includes(p.name) && p.value?.value) line += ` (${p.name})`;
     }
     size += line.length + 1;
     if (size > SNAPSHOT_LIMIT) {
@@ -516,7 +518,12 @@ async function uncovered(target, backendNodeId, ref) {
   const inside = await isolated(target, backendNodeId, function (h) {
     for (let n = h; n; n = n.parentNode || n.host) if (n === this) return true;
     // Custom checkboxes and switches hide the input under its label; the browser forwards that click.
-    return h.closest?.("label")?.control === this;
+    if (h.closest?.("label")?.control === this) return true;
+    // Or under a sprite beside it, as Synology DSM does: accept what's on top when it sits in the
+    // box's own wrapper, the parent that also holds its label and no other control.
+    const wrap = this.parentElement;
+    return (this.type === "checkbox" || this.type === "radio") && !!wrap?.contains(h) && [...(this.labels || [])].some((l) => wrap.contains(l)) &&
+      [...wrap.querySelectorAll("input, select, textarea, button")].every((c) => c === this || c.type === "hidden");
   }, {node: hit.backendNodeId});
   if (!inside) throw new Error(`Something else covers ${ref} (a dialog or banner?). Take a new snapshot.`);
   return {x, y};

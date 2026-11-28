@@ -58,9 +58,19 @@ check('page shows the submission', snap.outline.includes('"Submitted: hello"'), 
   check('typing ignores a page override of focus()', t.result?.typed && v.result.value === 'safe', { t, v: v.result.value })
 }
 {
-  const cb = await call(A, 'click', { ref: refOf((await call(A, 'snapshot')).result, /checkbox "Agree"/) })
+  const s4 = (await call(A, 'snapshot')).result
+  check('snapshot shows unticked checkboxes as unchecked', /checkbox "Agree"$/m.test(s4.outline) && /checkbox "Enable Recycle Bin"$/m.test(s4.outline), s4.outline)
+  const cb = await call(A, 'click', { ref: refOf(s4, /checkbox "Agree"/) })
   const s5 = (await call(A, 'snapshot')).result
   check('label-covered custom checkbox can be clicked', cb.result && /checkbox "Agree" \(checked\)/.test(s5.outline), { cb, o: s5.outline })
+  const pg = cdp((await pageTarget()).webSocketDebuggerUrl)
+  await pg('Runtime.evaluate', { expression: 'document.getElementById("overlay").style.display = "block"' })
+  const over = await call(A, 'click', { ref: refOf((await call(A, 'snapshot')).result, /checkbox "Enable Recycle Bin"/) })
+  check('a page overlay still covers that checkbox', /covers/.test(over.error ?? ''), over)
+  await pg('Runtime.evaluate', { expression: 'document.getElementById("overlay").style.display = "none"' })
+  const dsm = await call(A, 'click', { ref: refOf(s5, /checkbox "Enable Recycle Bin"/) })
+  const s6 = (await call(A, 'snapshot')).result
+  check('checkbox under its own sprite (Synology DSM) can be clicked', dsm.result && /checkbox "Enable Recycle Bin" \(checked\)/.test(s6.outline), { dsm, o: s6.outline })
   const tb = await call(A, 'click', { ref: refOf(s5, /textbox "Search"/) })
   check('click on a plain text input', tb.result, tb)
 }
