@@ -6,30 +6,42 @@
 <style>
   main { max-width: 620px; margin: 48px auto; padding: 0 20px; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 6px 20px; margin-top: 20px; }
+  .inline-link { font-size: 13px; }
   footer { margin-top: 16px; font-size: 13px; }
+  footer a { white-space: nowrap; }
 </style>
 <main>
-  <h1>Amp Browser Bridge<small>Lend one Chrome tab to your Amp threads. This page updates as you go.</small></h1>
+  <h1>Amp Browser Bridge<small>Lend one Chrome tab to your Amp threads across orbs and runners.</small></h1>
   <div class="card">
     <ol class="steps">
-      <li class="step" id="bridge">
-        <span class="dot"></span>
-        <div><h2>Bridge found on 127.0.0.1:19989</h2><div class="detail"></div></div>
-      </li>
-      <li class="step" id="paired">
+      <li class="step" id="relay">
         <span class="dot"></span>
         <div>
-          <h2>Paired with this browser</h2><div class="detail"></div>
-          <div id="pairForm" class="row hidden">
-            <input id="code" type="text" placeholder="XXXXX-XXXXX" autocomplete="off" spellcheck="false">
-            <button id="connect" class="primary">Pair</button>
+          <h2>Connected to reflector</h2>
+          <div class="detail"></div>
+          <div class="row">
+            <button id="reconnect" class="hidden">Reconnect</button>
+            <a href="#" id="toggleRelay" class="inline-link">Change reflector</a>
           </div>
-          <div id="reconnectRow" class="row hidden"><button id="reconnect">Reconnect</button></div>
+          <div id="relayForm" class="row hidden">
+            <input id="relayInput" type="text" placeholder="https://amp-browser-bridge.fly.dev" autocomplete="off" spellcheck="false">
+            <button id="saveRelay" class="primary">Save</button>
+            <button id="resetRelay" class="hidden">Use default</button>
+          </div>
+          <p id="relayError" class="error hidden"></p>
         </div>
       </li>
-      <li class="step" id="published">
+      <li class="step" id="amp">
         <span class="dot"></span>
-        <div><h2>Published to your orbs</h2><div class="detail"></div></div>
+        <div>
+          <h2>Connected with Amp</h2>
+          <div class="detail"></div>
+          <div class="row">
+            <button id="copyKey" class="primary">Copy setup key</button>
+            <button id="rotateKey">Rotate key</button>
+            <span id="copyNote" class="muted"></span>
+          </div>
+        </div>
       </li>
       <li class="step" id="lent">
         <span class="dot"></span>
@@ -37,7 +49,7 @@
       </li>
     </ol>
   </div>
-  <footer class="muted">Nothing listens on your network: Chrome only talks to 127.0.0.1.
+  <footer class="muted">End-to-end encrypted: the reflector sees only ciphertext.
     <a href="https://github.com/lox/amp-browser-bridge#readme" target="_blank">How it works</a></footer>
 </main>
 <script src="setup.js"></script>

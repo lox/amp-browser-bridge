@@ -1,6 +1,6 @@
-// Shared helpers for the end-to-end scripts. test/e2e/run.ts starts the bridge, the test page and a
-// headed Chrome with the extension for each script, and sets E2E_HOME to the bridge's home.
-import { signRequest, verifyResponse } from '../../plugin/host'
+// Shared helpers for the end-to-end scripts. test/e2e/run.ts starts the local blind reflector, the
+// test page and a headed Chrome with the extension for each script, and sets E2E_HOME to a fresh HOME.
+import { createClient, type BridgeClient } from '../../plugin/crypto'
 
 export const EXT = 'goknnphohomgekkahpdiphdfladfnmoc'
 export const PAGE = 'http://127.0.0.1:8765'
@@ -8,18 +8,26 @@ export const BRIDGE = 'http://127.0.0.1:19989'
 const CDP = 'http://127.0.0.1:9333'
 export const dir = `${process.env.E2E_HOME}/.amp-browser-bridge`
 
-export const readToken = async () => (await Bun.file(`${dir}/token`).text()).trim()
-export const readPairingCode = async () => (await Bun.file(`${dir}/pairing-code`).text()).trim()
+let cachedKey = ''
+let cachedClient: BridgeClient | undefined
 
-// The bridge's HTTP API, signed like the plugin's requests; an answer without the bridge's signature fails the script.
+export const readSetupKey = async (): Promise<string> => (await message({ action: 'setupKey' })).setupKey
+
+async function client() {
+  const key = await readSetupKey()
+  if (!cachedClient || cachedKey !== key) {
+    cachedClient = createClient(key)
+    cachedKey = key
+  }
+  return cachedClient
+}
+
+// Sends an end-to-end encrypted request through the local reflector, as the plugin does.
 export async function api(path: string, thread: string | null, init: RequestInit = {}) {
-  const token = await readToken()
-  const method = init.method ?? 'GET', body = typeof init.body === 'string' ? init.body : ''
-  const auth = signRequest(token, { method, path, thread: thread ?? '', body })
-  const res = await fetch(BRIDGE + path, { ...init, headers: { 'x-bridge-auth': auth.header, 'content-type': 'application/json', ...(thread ? { 'x-amp-thread': thread } : {}) } })
-  const text = await res.text()
-  if (!verifyResponse(token, auth.nonce, res.status, text, res.headers.get('x-bridge-proof'))) throw new Error(`unsigned answer from the bridge (HTTP ${res.status})`)
-  return JSON.parse(text)
+  const c = await client()
+  const method = init.method ?? 'GET'
+  const body = typeof init.body === 'string' ? init.body : ''
+  return c.request(thread ?? '', path, { method, body })
 }
 export const call = (thread: string, tool: string, args: object = {}) => api('/call', thread, { method: 'POST', body: JSON.stringify({ tool, args }) })
 
@@ -72,7 +80,9 @@ let extPage: Send | undefined
 async function extensionPage() {
   if (!extPage) {
     const page = (await targets()).find((t) => t.type === 'page' && t.url === DRIVER) ?? (await openTarget(DRIVER))
-    extPage = cdp(page.webSocketDebuggerUrl)
+    const conn = cdp(page.webSocketDebuggerUrl)
+    await until(async () => (await evaluate(conn, 'typeof chrome?.runtime?.sendMessage')) === 'function')
+    extPage = conn
   }
   return extPage
 }
@@ -81,7 +91,8 @@ async function extensionPage() {
 // Messaging also starts a stopped service worker. A "continue" sent this way is ignored, because it
 // comes from a tab other than the handoff's; use the real popup's Continue button instead.
 export const message = async (m: object) => evaluate(await extensionPage(), `chrome.runtime.sendMessage(${JSON.stringify(m)})`)
-export const pair = async () => message({ action: 'pair', code: await readPairingCode() })
+/** Points the extension at the local e2e reflector (`BRIDGE`). */
+export const pair = async () => message({ action: 'setRelay', relay: BRIDGE })
 
 // background.js is a module, so its functions aren't reachable here: evaluate only chrome.* and self.
 export async function wakeWorker(): Promise<{ send: Send; target: any }> {
@@ -121,7 +132,7 @@ export async function trustedClick(page: Send, x: number, y: number) {
 
 // A trusted click in the middle of the element `selector` returns, a JS expression evaluated in the page.
 export async function clickElement(page: Send, selector: string) {
-  const r = await evaluate(page, `(() => { const e = ${selector}; if (!e) return null; e.scrollIntoView({block: 'center'}); const b = e.getBoundingClientRect(); return {x: b.x + b.width / 2, y: b.y + b.height / 2} })()`)
+  const r = await evaluate(page, `(() => { const e = ${selector}; if (!e) return null; e.scrollIntoView({block: 'center'}); const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 ? {x: b.x + b.width / 2, y: b.y + b.height / 2} : null })()`)
   if (!r) throw new Error(`nothing to click: ${selector}`)
   await trustedClick(page, r.x, r.y)
 }
@@ -174,6 +185,7 @@ export async function reloadExtension() {
   if (!(await until(async () => evaluate(page, `!!${card}?.shadowRoot.querySelector('#dev-reload-button')`)))) throw new Error('no Reload button on the extension card; is Developer mode on?')
   await clickElement(page, `${card}.shadowRoot.querySelector('#dev-reload-button')`)
   extPage = undefined
+  cachedClient = undefined
   await until(async () => (await workerTarget())?.id !== old?.id || !(await targets()).some((t) => t.id === old?.id))
   try {
     return await wakeWorker()

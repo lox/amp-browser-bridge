@@ -22,8 +22,8 @@ button { font: inherit; font-weight: 500; padding: 6px 12px; border-radius: 6px;
 button:hover:not(:disabled) { border-color: var(--muted); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button:disabled { opacity: .5; cursor: default; }
-input[type=text] { font: 13px ui-monospace, Menlo, monospace; padding: 6px 8px; border-radius: 6px; width: 150px;
-  border: 1px solid var(--line); background: var(--bg); color: var(--text); text-transform: uppercase; }
+input[type=text] { font: 13px ui-monospace, Menlo, monospace; padding: 6px 8px; border-radius: 6px; width: 280px; max-width: 100%;
+  border: 1px solid var(--line); background: var(--bg); color: var(--text); }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
 label { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
 

@@ -1,9 +1,6 @@
-// The setup page as a new user meets it: it opens on install, a wrong code is refused, the plugin's
-// setup.html#code= link pairs by itself and leaves no code behind, the checklist goes green step by
-// step, and the extension pairs no more after Reload in chrome://extensions.
-import { EXT, PAGE, api, cdp, check, clickElement, dir, done, evaluate, openPopup, openTarget, readPairingCode, reloadExtension, shot, targets, until } from './lib'
-import { setupPageID, writePublished } from '../../plugin/host'
-import { EXTENSION_IDS } from '../../plugin/extension-id'
+// The setup page from first install through lending, extension reload, and key rotation.
+import { createClient } from '../../plugin/crypto'
+import { BRIDGE, EXT, PAGE, api, cdp, check, clickElement, done, evaluate, openPopup, openTarget, readSetupKey, reloadExtension, shot, showTab, targets, until } from './lib'
 
 const SETUP = `chrome-extension://${EXT}/setup.html`
 const steps = (page: any) => evaluate(page, `Object.fromEntries([...document.querySelectorAll('.step')].map(s => [s.id, s.className.replace('step', '').trim()]))`)
@@ -12,51 +9,69 @@ const detail = (page: any, id: string) => evaluate(page, `document.querySelector
 const installed = await until(async () => (await targets()).some((t) => t.type === 'page' && t.url === SETUP))
 check('the setup page opens by itself on install', installed)
 let setup = cdp((await targets()).find((t) => t.url === SETUP).webSocketDebuggerUrl)
-check('it finds the bridge and asks to pair', await until(async () => { const s = await steps(setup); return s.bridge === 'ok' && s.paired === 'fail' }), await steps(setup))
-// The plugin opens setup.html#code= under the build that last probed the bridge; without that it
-// would guess the Chrome Web Store build, and Chrome would show its "blocked" page.
-check('the bridge will open pairing in the unpacked build, not the Store one', EXTENSION_IDS[0] !== EXT && setupPageID(dir) === EXT, setupPageID(dir))
-check('it shows the pairing form', await evaluate(setup, `!document.getElementById('pairForm').classList.contains('hidden')`))
-await shot('1-not-paired')
+await showTab(SETUP)
+await until(async () => (await evaluate(setup, `document.readyState === 'complete' && typeof document.getElementById('toggleRelay')?.onclick === 'function' && document.querySelector('#relay .detail').textContent !== ''`)) === true)
 
-// A wrong code typed into the form is refused and says so.
-await clickElement(setup, `document.getElementById('code')`)
-await setup('Input.insertText', { text: 'WRONG-CODE1' })
-await clickElement(setup, `document.getElementById('connect')`)
-check('a wrong code is refused', await until(async () => /code|pair/i.test(await evaluate(setup, `document.querySelector('#paired .error')?.textContent ?? ''`))), await detail(setup, 'paired'))
-check('the bridge is still unpaired', !(await api('/status', null)).extension_connected)
+// Point at a bad URL first, then at the local reflector via the setup page's form.
+await clickElement(setup, `document.getElementById('toggleRelay')`)
+await until(async () => (await evaluate(setup, `!document.getElementById('relayForm').classList.contains('hidden')`)) === true)
+await evaluate(setup, `document.getElementById('relayInput').value = ''`)
+await clickElement(setup, `document.getElementById('relayInput')`)
+await setup('Input.insertText', { text: 'not-a-url' })
+await clickElement(setup, `document.getElementById('saveRelay')`)
+check('an invalid reflector URL shows an error', await until(async () => /http/i.test(await evaluate(setup, `document.getElementById('relayError').textContent`))))
 
-// What browser_bridge_pair opens on the Mac: the setup page with the code in its fragment.
-const code = await readPairingCode()
-const paired = await openTarget(`${SETUP}#code=${encodeURIComponent(code)}`)
-setup = cdp(paired.webSocketDebuggerUrl)
-check('setup.html#code= pairs by itself', await until(async () => (await steps(setup)).paired === 'ok'), await detail(setup, 'paired'))
-check('the code is gone from the address bar', (await evaluate(setup, 'location.href')) === SETUP && !(await targets()).some((t) => t.url.includes(code)))
-check('the bridge sees the extension', (await api('/status', null)).extension_connected)
-check('not published yet: that step says so', (await steps(setup)).published === 'fail' && /Not published/.test(await detail(setup, 'published')))
+await evaluate(setup, `document.getElementById('relayInput').value = ''`)
+await clickElement(setup, `document.getElementById('relayInput')`)
+await setup('Input.insertText', { text: BRIDGE })
+await clickElement(setup, `document.getElementById('saveRelay')`)
+check('connecting to the reflector turns step 1 green', await until(async () => (await steps(setup)).relay === 'ok'), await steps(setup))
+check('step 1 names the reflector URL', (await detail(setup, 'relay')).includes(BRIDGE), await detail(setup, 'relay'))
+check('step 2 waits for Amp before first use', (await steps(setup)).amp === '' && /Copy setup key/.test(await detail(setup, 'amp')), await detail(setup, 'amp'))
 check('nothing lent yet', (await steps(setup)).lent === '')
-await shot('2-paired')
+check('no raw setup key is rendered into the page text', !(await evaluate(setup, `document.body.textContent`)).includes('abb1_'))
+await shot('1-relay-connected')
 
-// Publishing, as browser_bridge_publish records it; the bridge passes it on to the extension.
-const url = 'https://t-example-p19989.onamp.dev', thread = 'T-00000000-0000-0000-0000-0000000000d1'
-writePublished(dir, { url, thread, at: new Date().toISOString() })
-check('published: that step goes green and names the portal', await until(async () => (await steps(setup)).published === 'ok' && (await detail(setup, 'published')).includes(url), 50), await detail(setup, 'published'))
+// Copy setup key, then connect from Amp: step 2 turns green.
+await clickElement(setup, `document.getElementById('copyKey')`)
+check('Copy setup key confirms the copy', await until(async () => /Copied/.test(await evaluate(setup, `document.getElementById('copyNote').textContent`))))
+const oldKey = await readSetupKey()
+const oldClient = createClient(oldKey)
+check('Amp reaches the extension end-to-end', (await api('/status', null)).extension_connected === true)
+await showTab(SETUP)
+check('step 2 turns green once Amp has connected', await until(async () => (await steps(setup)).amp === 'ok'), await detail(setup, 'amp'))
+await shot('2-amp-connected')
 
 // Lend the test page from the real toolbar popup.
 const popup = await openPopup(`${PAGE}/`)
 await popup.click('lend')
-check('Lend this tab in the popup lends it', await until(async () => (await popup.text('status')) === 'Lent read-only'), { status: await popup.text('status'), detail: await popup.text('detail'), error: await popup.text('error') })
+check('Lend this tab in the popup lends it', await until(async () => (await popup.text('status')) === 'Lent read-only'), { status: await popup.text('status'), detail: await popup.text('detail') })
 await popup.close()
-await setup('Page.bringToFront')
+await showTab(SETUP)
 check('every step is green', await until(async () => Object.values(await steps(setup)).every((s) => s === 'ok')), await steps(setup))
 check('the lent step names the tab', /Lent read-only: Bridge test page/.test(await detail(setup, 'lent')), await detail(setup, 'lent'))
 await shot('3-all-green')
 
-// Reload on chrome://extensions: the lend ends, the key stays, and it reconnects by itself.
+// Reload on chrome://extensions: the lend ends, the key and custom reflector stay, and it reconnects with a new ephemeral session.
 await reloadExtension()
-check('after Reload the bridge sees the extension again without pairing', await until(async () => (await api('/status', null)).extension_connected))
+check('after Reload Amp sees the extension again without re-entering a key', await until(async () => (await api('/status', null)).extension_connected === true))
 check('after Reload nothing is lent', (await api('/status', null)).tab === null)
 setup = cdp((await openTarget(SETUP)).webSocketDebuggerUrl)
-check('the setup page shows paired and published, and nothing lent', await until(async () => { const s = await steps(setup); return s.bridge === 'ok' && s.paired === 'ok' && s.published === 'ok' && s.lent === '' }), await steps(setup))
+await showTab(SETUP)
+check('the setup page shows connected with Amp and nothing lent', await until(async () => { const s = await steps(setup); return s.relay === 'ok' && s.amp === 'ok' && s.lent === '' }), await steps(setup))
 await shot('4-after-reload')
+
+// Rotating the key revokes the previous client immediately and resets step 2 until the new key is used.
+await clickElement(setup, `document.getElementById('rotateKey')`)
+check('Rotate key resets step 2', await until(async () => (await steps(setup)).amp === '' && (await steps(setup)).relay === 'ok'))
+let oldRejected = false
+try {
+  await oldClient.request('', '/status')
+} catch (e: any) {
+  oldRejected = /rejected|unauthorized|not connected/i.test(e.message)
+}
+// Either the old gate channel has no listener (disconnected) or decryption rejected the old key.
+const oldStatus = oldRejected ? { extension_connected: false } : await oldClient.request('', '/status')
+check('the rotated-out key can no longer reach this browser', oldRejected || oldStatus.extension_connected === false, oldStatus)
+check('the new key reaches the browser and turns step 2 green again', (await api('/status', null)).extension_connected === true && (await until(async () => (await steps(setup)).amp === 'ok')))
 done()

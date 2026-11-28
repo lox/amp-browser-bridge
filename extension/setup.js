@@ -1,56 +1,59 @@
-// The first-run checklist. It polls the service worker's state and says, for each step, what is
-// done or exactly what to do next. Opened as setup.html#code=<code>, it pairs by itself.
+// The setup and status checklist. Polls the service worker's state and lets you copy or rotate
+// this browser's setup key (without ever rendering the secret on screen) or point at a custom reflector.
 const $ = (id) => document.getElementById(id);
 const escape = (v) => String(v).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 /** A template whose interpolated values are escaped; the literal parts are trusted markup. */
 const html = (strings, ...values) => strings.reduce((out, s, i) => out + escape(values[i - 1]) + s);
 
-const ASK_PAIR = `Ask Amp in a thread on your Mac for a new pairing code: it opens this page and pairs by
-  itself. Or run <code>cat ~/.amp-browser-bridge/pairing-code</code> and enter the code here.`;
-const ASK_PUBLISH = `In an Amp thread on your Mac, ask <em>“publish the browser bridge”</em> and confirm.
-  Orbs that were already running need <code>amp orb restart-processes</code>.`;
+let editingRelay = false;
+let copyTimer = null;
 
 function step(id, status, detail) {
   $(id).className = `step ${status}`;
   $(id).querySelector(".detail").innerHTML = detail;
 }
 
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {}
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.style.cssText = "position:fixed;opacity:0;pointer-events:none";
+  document.body.append(area);
+  try {
+    area.select();
+    document.execCommand("copy");
+  } finally {
+    area.remove();
+  }
+}
+
 function render(s) {
-  const up = s.bridge === "connected" || s.bridge === "found";
-  if (up) step("bridge", "ok", "The bridge is running.");
-  else if (s.bridge === "other") {
-    step("bridge", "fail", `Something other than the bridge answers on port 19989. Quit it, then restart the Amp app.`);
-  } else {
-    step("bridge", "fail", `Nothing answers on 127.0.0.1:19989. Open the Amp app on your Mac with <b>Run threads on
-      this Mac</b> turned on (App Settings → Runner), and install the plugin if you haven't
-      (<a href="https://github.com/lox/amp-browser-bridge#set-up" target="_blank">set up</a>). The bridge starts with Amp.`);
+  if (s.ok === false) {
+    $("relayError").textContent = s.error || "Invalid reflector URL.";
+    $("relayError").classList.remove("hidden");
   }
 
-  let pairForm = false;
-  let reconnect = false;
-  if (s.connected) step("paired", "ok", "This browser is paired and connected.");
-  else if (s.pairing) step("paired", "wait", up ? "Pairing…" : "Got a pairing code. It is used as soon as the bridge answers.");
-  else if (!up) step("paired", s.paired ? "wait" : "", s.paired ? "Paired. Reconnects when the bridge is back." : "Waiting for the bridge.");
-  else if (s.paired) {
-    reconnect = true;
-    step("paired", "wait", s.bridgeError ? html`${s.bridgeError}` : "Paired. Connecting…");
+  if (s.connected) {
+    step("relay", "ok", html`Connected end-to-end encrypted through <code>${s.relay}</code>.`);
+  } else if (s.bridgeError) {
+    step("relay", "fail", html`<p class="error">${s.bridgeError}</p>`);
   } else {
-    pairForm = true;
-    step("paired", "fail", (s.pairError ? html`<p class="error">${s.pairError}</p>` : "Not paired yet. ") + ASK_PAIR);
+    step("relay", "wait", html`Connecting to <code>${s.relay}</code>…`);
   }
-  $("pairForm").classList.toggle("hidden", !pairForm);
-  $("reconnectRow").classList.toggle("hidden", !reconnect);
+  $("reconnect").classList.toggle("hidden", !!s.connected);
+  $("relayForm").classList.toggle("hidden", !editingRelay);
+  $("resetRelay").classList.toggle("hidden", s.relay === s.defaultRelay);
+  if (!editingRelay) $("relayInput").value = s.relay || "";
 
-  // The bridge reports this after it accepts the browser; an older bridge never does.
-  if (!s.connected) step("published", "", "Checked once this browser is connected.");
-  else if (s.published === undefined) step("published", "unknown", `This bridge doesn't report it. If orbs can't reach your browser: ${ASK_PUBLISH}`);
-  else if (!s.published) step("published", "fail", `Not published, so only threads on this Mac can use the tab. ${ASK_PUBLISH}`);
-  else {
-    const {url, thread} = s.published;
-    step("published", "ok", "Orbs reach this browser" +
-      (url ? html` through <code>${url}</code>` : "") +
-      (thread ? html`, published from <a href="https://ampcode.com/threads/${thread}" target="_blank">this thread</a>; keep it unarchived.` : "."));
+  if (s.everUsed) {
+    step("amp", "ok", "Amp has connected with this browser's setup key. Copy it if you need to update BROWSER_BRIDGE_KEY, or rotate it to revoke access.");
+  } else {
+    step("amp", "", `Click <b>Copy setup key</b>, then save it as your personal Amp secret <code>BROWSER_BRIDGE_KEY</code> (or ask any Amp thread to set it for you).`);
   }
+  $("copyKey").classList.toggle("primary", !s.everUsed);
 
   const TODO_LEND = `Open the page you want help with, click the Amp Browser Bridge icon in Chrome's toolbar
     (pin it from the puzzle-piece menu), and choose <b>Lend this tab</b>. Then ask Amp about it.`;
@@ -62,23 +65,45 @@ function render(s) {
 
 const ask = (message) => chrome.runtime.sendMessage(message).then(render);
 
-function pair(code) {
-  if (code.trim()) ask({action: "pair", code});
+$("toggleRelay").onclick = (event) => {
+  event.preventDefault();
+  editingRelay = !editingRelay;
+  $("relayError").classList.add("hidden");
+  $("relayForm").classList.toggle("hidden", !editingRelay);
+  if (editingRelay) $("relayInput").focus();
+};
+
+function saveRelay(value) {
+  $("relayError").classList.add("hidden");
+  chrome.runtime.sendMessage({action: "setRelay", relay: value}).then((s) => {
+    if (s.ok !== false) editingRelay = false;
+    render(s);
+  });
 }
 
-/** Pairs with a code passed in the URL, then drops it from the address bar and history. */
-function pairFromHash() {
-  const code = new URLSearchParams(location.hash.slice(1)).get("code");
-  if (!code) return;
-  history.replaceState(null, "", location.pathname);
-  pair(code);
-}
-
-$("connect").onclick = () => pair($("code").value);
-$("code").onkeydown = (event) => event.key === "Enter" && pair($("code").value);
+$("saveRelay").onclick = () => saveRelay($("relayInput").value);
+$("relayInput").onkeydown = (event) => event.key === "Enter" && saveRelay($("relayInput").value);
+$("resetRelay").onclick = () => saveRelay("");
 $("reconnect").onclick = () => ask({action: "reconnect"});
-addEventListener("hashchange", pairFromHash);
 
-pairFromHash();
+$("copyKey").onclick = async () => {
+  const s = await chrome.runtime.sendMessage({action: "setupKey"});
+  if (s.setupKey) {
+    await copyText(s.setupKey);
+    clearTimeout(copyTimer);
+    $("copyNote").textContent = "Copied to clipboard.";
+    copyTimer = setTimeout(() => ($("copyNote").textContent = ""), 2000);
+  }
+  render(s);
+};
+
+$("rotateKey").onclick = async () => {
+  const s = await chrome.runtime.sendMessage({action: "rotateKey"});
+  clearTimeout(copyTimer);
+  $("copyNote").textContent = "Key rotated. Copy the new setup key to Amp.";
+  copyTimer = setTimeout(() => ($("copyNote").textContent = ""), 3000);
+  render(s);
+};
+
 ask({action: "state"});
 setInterval(() => ask({action: "state"}), 1500);
