@@ -509,7 +509,10 @@ async function uncovered(target, backendNodeId, ref) {
   const q = model.content;
   const x = (q[0] + q[2] + q[4] + q[6]) / 4;
   const y = (q[1] + q[3] + q[5] + q[7]) / 4;
-  const hit = await cdp(target, "DOM.getNodeForLocation", {x: Math.round(x), y: Math.round(y), includeUserAgentShadowDOM: false, ignorePointerEventsNone: false});
+  // The box is in viewport coordinates, but getNodeForLocation takes the document's: add the scroll,
+  // or on a scrolled page the check looks at whatever is scrollY above the node.
+  const {cssLayoutViewport: view} = await cdp(target, "Page.getLayoutMetrics");
+  const hit = await cdp(target, "DOM.getNodeForLocation", {x: Math.round(x + view.pageX), y: Math.round(y + view.pageY), includeUserAgentShadowDOM: false, ignorePointerEventsNone: false});
   const inside = await isolated(target, backendNodeId, function (h) {
     for (let n = h; n; n = n.parentNode || n.host) if (n === this) return true;
     // Custom checkboxes and switches hide the input under its label; the browser forwards that click.
@@ -818,7 +821,8 @@ async function detectChallenge(lend, waitMs) {
 async function scroll(target, dy, effects) {
   if (!Number.isFinite(dy) || Math.abs(dy) > 10_000) throw new Error("delta_y must be between -10000 and 10000.");
   effects.sent = true;
-  await cdp(target, "Runtime.evaluate", {expression: `window.scrollBy(0, ${dy})`});
+  // Instant, or on a page with scroll-behavior: smooth the scroll has barely started when this returns.
+  await cdp(target, "Runtime.evaluate", {expression: `window.scrollBy({top: ${dy}, behavior: "instant"})`});
   return {scrolled: dy};
 }
 
