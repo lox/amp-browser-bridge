@@ -380,7 +380,7 @@ async function connect() {
       return;
     }
     lastError = `Cannot reach reflector at ${cfg.relay}; retrying.`;
-    reconnectTimer = setTimeout(() => connect(), 3000);
+    reconnectTimer = setTimeout(() => connect(), 2500 + Math.floor(Math.random() * 2000));
   };
 }
 

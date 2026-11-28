@@ -22,9 +22,6 @@ const MAX_PENDING_PER_CHANNEL = 4
 const MAX_GLOBAL_PENDING = 2048
 const MAX_UNREGISTERED_SOCKETS = 256
 const MAX_TOTAL_SOCKETS = 2048
-const MAX_UPGRADES_PER_IP_PER_MIN = 300
-const RATE_WINDOW_MS = 60_000
-const MAX_RATE_ENTRIES = 4096
 
 const encoder = new TextEncoder()
 
@@ -66,7 +63,6 @@ export interface RelayOptions {
   forwardTimeoutMs?: number
   maxUnregistered?: number
   maxTotalSockets?: number
-  maxUpgradesPerIpPerMin?: number
   maxGlobalPending?: number
   maxStreamQueueBytes?: number
   maxGlobalStreamBytes?: number
@@ -135,7 +131,6 @@ export function startRelay(options: RelayOptions = {}) {
   const forwardTimeoutMs = options.forwardTimeoutMs ?? DEFAULT_FORWARD_TIMEOUT_MS
   const maxUnregistered = options.maxUnregistered ?? MAX_UNREGISTERED_SOCKETS
   const maxTotalSockets = options.maxTotalSockets ?? MAX_TOTAL_SOCKETS
-  const maxUpgradesPerIpPerMin = options.maxUpgradesPerIpPerMin ?? MAX_UPGRADES_PER_IP_PER_MIN
   const maxGlobalPending = options.maxGlobalPending ?? MAX_GLOBAL_PENDING
   const maxStreamQueueBytes = options.maxStreamQueueBytes ?? MAX_STREAM_QUEUE_BYTES
   const maxGlobalStreamBytes = options.maxGlobalStreamBytes ?? MAX_GLOBAL_STREAM_BYTES
@@ -149,7 +144,6 @@ export function startRelay(options: RelayOptions = {}) {
   const pendingByCallerIp = new Map<string, Set<Pending>>()
   const streamsByBrowserIp = new Map<string, Set<Pending>>()
   const bufferedBytesByIp = new Map<string, number>()
-  const ipRates = new Map<string, { count: number; resetAt: number }>()
   let totalSockets = 0
   let globalPending = 0
   let activeStreams = 0
@@ -175,26 +169,6 @@ export function startRelay(options: RelayOptions = {}) {
       if (flyIp) return normalizeIpKey(flyIp)
     }
     return normalizeIpKey(srv.requestIP(req)?.address ?? '')
-  }
-
-  function allowUpgradeRate(ip: string): boolean {
-    const now = Date.now()
-    if (ipRates.size > 1024) {
-      for (const [k, v] of ipRates) if (now >= v.resetAt) ipRates.delete(k)
-      while (ipRates.size >= MAX_RATE_ENTRIES) {
-        const oldest = ipRates.keys().next().value
-        if (oldest === undefined) break
-        ipRates.delete(oldest)
-      }
-    }
-    const existing = ipRates.get(ip)
-    if (!existing || now >= existing.resetAt) {
-      ipRates.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS })
-      return true
-    }
-    if (existing.count >= maxUpgradesPerIpPerMin) return false
-    existing.count++
-    return true
   }
 
   function addBufferedBytes(p: Pending, delta: number) {
@@ -403,9 +377,6 @@ export function startRelay(options: RelayOptions = {}) {
           return new Response('forbidden', { status: 403 })
         }
         const ip = clientIp(req, server)
-        if (!allowUpgradeRate(ip)) {
-          return new Response('upgrade rate exceeded', { status: 429 })
-        }
         if (unregisteredSockets.size >= maxUnregistered) {
           return new Response('too many pending connections', { status: 503 })
         }
