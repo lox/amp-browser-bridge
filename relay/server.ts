@@ -2,8 +2,8 @@
 //
 // Chrome connects outbound on `GET /ext` (WebSocket) and sends `{type: "register", gate, banner}`.
 // Amp plugin clients call `GET /banner` and `POST /forward` with `x-bridge-gate: <gate>`.
-// The reflector hashes `SHA-256(gate)` in RAM to pair callers with Chrome's WebSocket and forwards
-// opaque AES-256-GCM envelopes. It holds no disk state, no user accounts, and no encryption keys.
+// The reflector hashes `SHA-256(gate)` in RAM to pair callers with Chrome's WebSocket and streams
+// opaque AES-256-GCM ciphertexts through without retaining multi-frame buffers on the server.
 import type { Server, ServerWebSocket } from 'bun'
 import { createHash, randomBytes } from 'node:crypto'
 import { isIP } from 'node:net'
@@ -15,31 +15,36 @@ const IDLE_TIMEOUT_S = 90
 const MAX_REQ_BYTES = 256 * 1024
 const MAX_WS_FRAME_BYTES = 64 * 1024
 const MAX_RES_CHARS = 4 * 1024 * 1024
-const MAX_CHANNEL_BUFFER_CHARS = 4 * 1024 * 1024
-const MAX_GLOBAL_BUFFER_CHARS = 32 * 1024 * 1024
+const STREAM_HIGH_WATER_BYTES = 256 * 1024
 const MAX_PENDING_PER_CHANNEL = 4
-const MAX_GLOBAL_PENDING = 128
-const MAX_UNREGISTERED_SOCKETS = 64
-const MAX_TOTAL_SOCKETS = 512
-const MAX_SOCKETS_PER_IP = 8
-const MAX_UPGRADES_PER_IP_PER_MIN = 30
+const MAX_PENDING_PER_IP = 128
+const MAX_STREAMS_PER_IP = 32
+const MAX_GLOBAL_PENDING = 2048
+const MAX_UNREGISTERED_SOCKETS = 128
+const MAX_TOTAL_SOCKETS = 2048
+const MAX_SOCKETS_PER_IP = 64
+const MAX_UPGRADES_PER_IP_PER_MIN = 120
 const RATE_WINDOW_MS = 60_000
 const MAX_RATE_ENTRIES = 4096
+
+const encoder = new TextEncoder()
 
 type Banner = { conn_id: string; b_pk: string; sig: string }
 type Pending = {
   id: string
+  callerIp: string
+  browserIp: string
   resolve: (res: Response) => void
   timer: Timer
-  chunks: string[]
-  chars: number
+  totalChars: number
+  streamCtrl?: ReadableStreamDefaultController<Uint8Array>
+  streaming: boolean
   released: boolean
 }
 type Channel = {
   ws: ServerWebSocket<SocketData>
   banner: Banner
   pending: Map<string, Pending>
-  bufferedChars: number
 }
 type SocketData = {
   ip: string
@@ -57,8 +62,9 @@ export interface RelayOptions {
   maxSocketsPerIp?: number
   maxTotalSockets?: number
   maxUpgradesPerIpPerMin?: number
-  maxChannelBufferChars?: number
-  maxGlobalBufferChars?: number
+  maxPendingPerIp?: number
+  maxStreamsPerIp?: number
+  maxResChars?: number
   trustFlyHeader?: boolean
   log?: (message: string) => void
 }
@@ -95,26 +101,40 @@ function validEnvelope(e: unknown): e is { conn_id: string; req_id: string; c_pk
   )
 }
 
+function incCounter(map: Map<string, number>, key: string) {
+  map.set(key, (map.get(key) ?? 0) + 1)
+}
+
+function decCounter(map: Map<string, number>, key: string) {
+  const prev = map.get(key) ?? 0
+  if (prev <= 1) map.delete(key)
+  else map.set(key, prev - 1)
+}
+
 export function startRelay(options: RelayOptions = {}) {
   const forwardTimeoutMs = options.forwardTimeoutMs ?? DEFAULT_FORWARD_TIMEOUT_MS
   const maxUnregistered = options.maxUnregistered ?? MAX_UNREGISTERED_SOCKETS
   const maxSocketsPerIp = options.maxSocketsPerIp ?? MAX_SOCKETS_PER_IP
   const maxTotalSockets = options.maxTotalSockets ?? MAX_TOTAL_SOCKETS
   const maxUpgradesPerIpPerMin = options.maxUpgradesPerIpPerMin ?? MAX_UPGRADES_PER_IP_PER_MIN
-  const maxChannelBufferChars = options.maxChannelBufferChars ?? MAX_CHANNEL_BUFFER_CHARS
-  const maxGlobalBufferChars = options.maxGlobalBufferChars ?? MAX_GLOBAL_BUFFER_CHARS
+  const maxPendingPerIp = options.maxPendingPerIp ?? MAX_PENDING_PER_IP
+  const maxStreamsPerIp = options.maxStreamsPerIp ?? MAX_STREAMS_PER_IP
+  const maxResChars = options.maxResChars ?? MAX_RES_CHARS
   const trustFlyHeader = options.trustFlyHeader ?? Boolean(process.env.FLY_APP_NAME)
   const log = options.log ?? (() => {})
 
   const channels = new Map<string, Channel>()
   const socketsByIp = new Map<string, number>()
+  const pendingByCallerIp = new Map<string, number>()
+  const pendingByBrowserIp = new Map<string, number>()
+  const streamsByBrowserIp = new Map<string, number>()
   const ipRates = new Map<string, { count: number; resetAt: number }>()
   let unregistered = 0
   let totalSockets = 0
   let globalPending = 0
-  let globalBufferedChars = 0
+  let activeStreams = 0
 
-  /** Groups IPv6 addresses by /64 subnet so a single host with a /64 block cannot rotate addresses past per-IP limits. */
+  /** Groups IPv6 addresses by /64 subnet so a single host with a /64 block cannot rotate addresses past per-source limits. */
   function normalizeIpKey(raw: string): string {
     const clean = raw.replace(/^::ffff:/i, '')
     const kind = isIP(clean)
@@ -167,47 +187,59 @@ export function startRelay(options: RelayOptions = {}) {
     if (!ws.data.countedSocket) return
     ws.data.countedSocket = false
     totalSockets = Math.max(0, totalSockets - 1)
-    const prev = socketsByIp.get(ws.data.ip) ?? 0
-    if (prev <= 1) socketsByIp.delete(ws.data.ip)
-    else socketsByIp.set(ws.data.ip, prev - 1)
+    decCounter(socketsByIp, ws.data.ip)
   }
 
-  function settlePending(slot: Channel, p: Pending, res?: Response) {
+  function settlePending(slot: Channel, p: Pending, action?: { response?: Response; closeStream?: boolean; abortStream?: string }) {
     if (p.released) return
     p.released = true
     clearTimeout(p.timer)
     slot.pending.delete(p.id)
     globalPending = Math.max(0, globalPending - 1)
-    if (p.chars > 0) {
-      slot.bufferedChars = Math.max(0, slot.bufferedChars - p.chars)
-      globalBufferedChars = Math.max(0, globalBufferedChars - p.chars)
-      p.chars = 0
-      p.chunks.length = 0
+    decCounter(pendingByCallerIp, p.callerIp)
+    decCounter(pendingByBrowserIp, p.browserIp)
+    if (p.streaming) {
+      p.streaming = false
+      activeStreams = Math.max(0, activeStreams - 1)
+      decCounter(streamsByBrowserIp, p.browserIp)
     }
-    if (res) p.resolve(res)
+    if (p.streamCtrl) {
+      const ctrl = p.streamCtrl
+      p.streamCtrl = undefined
+      try {
+        ctrl.close()
+      } catch {}
+      return
+    }
+    if (action?.response) p.resolve(action.response)
   }
 
   function dropPending(channel: Channel, status = 502, body: object = { dropped: true }) {
     for (const p of [...channel.pending.values()]) {
-      settlePending(channel, p, Response.json(body, { status }))
+      settlePending(channel, p, { response: Response.json(body, { status }), abortStream: 'browser disconnected' })
     }
   }
 
-  function forwardToBrowser(slot: Channel, signal: AbortSignal, outboundFrame: string, relayId: string): Promise<Response> {
+  function forwardToBrowser(slot: Channel, callerIp: string, signal: AbortSignal, outboundFrame: string, relayId: string): Promise<Response> {
+    const browserIp = slot.ws.data.ip
     return new Promise<Response>((resolve) => {
       const entry: Pending = {
         id: relayId,
+        callerIp,
+        browserIp,
         resolve,
-        chunks: [],
-        chars: 0,
+        totalChars: 0,
+        streaming: false,
         released: false,
         timer: setTimeout(() => {
-          settlePending(slot, entry, Response.json({ timeout: true }, { status: 504 }))
+          settlePending(slot, entry, { response: Response.json({ timeout: true }, { status: 504 }), abortStream: 'forward timed out' })
         }, forwardTimeoutMs),
       }
       slot.pending.set(relayId, entry)
       globalPending++
-      signal.addEventListener('abort', () => settlePending(slot, entry), { once: true })
+      incCounter(pendingByCallerIp, callerIp)
+      incCounter(pendingByBrowserIp, browserIp)
+      signal.addEventListener('abort', () => settlePending(slot, entry, { abortStream: 'client aborted' }), { once: true })
       slot.ws.send(outboundFrame)
     })
   }
@@ -239,7 +271,7 @@ export function startRelay(options: RelayOptions = {}) {
         }
         unregistered++
         totalSockets++
-        socketsByIp.set(ip, (socketsByIp.get(ip) ?? 0) + 1)
+        incCounter(socketsByIp, ip)
         return undefined
       }
 
@@ -259,6 +291,10 @@ export function startRelay(options: RelayOptions = {}) {
       if (url.pathname === '/forward' && req.method === 'POST') {
         const declared = Number(req.headers.get('content-length') ?? 0)
         if (declared > MAX_REQ_BYTES) return new Response('payload too large', { status: 413 })
+        const callerIp = clientIp(req, server)
+        if ((pendingByCallerIp.get(callerIp) ?? 0) >= maxPendingPerIp) {
+          return Response.json({ error: 'too many concurrent requests from this address' }, { status: 429 })
+        }
         if (globalPending >= MAX_GLOBAL_PENDING) {
           return Response.json({ error: 'reflector busy' }, { status: 503 })
         }
@@ -276,13 +312,21 @@ export function startRelay(options: RelayOptions = {}) {
         if (!slot) return Response.json({ connected: false }, { status: 404 })
         // Ephemeral key rotated since the caller cached it: return the new banner before touching Chrome.
         if (env.conn_id !== slot.banner.conn_id) return Response.json({ banner: slot.banner }, { status: 409 })
-        if (slot.pending.size >= MAX_PENDING_PER_CHANNEL || globalPending >= MAX_GLOBAL_PENDING) {
+        const browserIp = slot.ws.data.ip
+        if (
+          slot.pending.size >= MAX_PENDING_PER_CHANNEL ||
+          (pendingByCallerIp.get(callerIp) ?? 0) >= maxPendingPerIp ||
+          (pendingByBrowserIp.get(browserIp) ?? 0) >= maxPendingPerIp
+        ) {
           return Response.json({ error: 'too many concurrent requests' }, { status: 429 })
+        }
+        if (globalPending >= MAX_GLOBAL_PENDING) {
+          return Response.json({ error: 'reflector busy' }, { status: 503 })
         }
 
         const relayId = randomBytes(8).toString('hex')
         const outboundFrame = JSON.stringify({ type: 'req', relay_id: relayId, req_id: env.req_id, c_pk: env.c_pk, ct: env.ct })
-        return forwardToBrowser(slot, req.signal, outboundFrame, relayId)
+        return forwardToBrowser(slot, callerIp, req.signal, outboundFrame, relayId)
       }
 
       return new Response('not found', { status: 404 })
@@ -318,7 +362,7 @@ export function startRelay(options: RelayOptions = {}) {
             previous.ws.close(4001, 'replaced')
           }
           ws.data.channelId = channelId
-          channels.set(channelId, { ws, banner: msg.banner, pending: new Map(), bufferedChars: 0 })
+          channels.set(channelId, { ws, banner: msg.banner, pending: new Map() })
           ws.send(JSON.stringify({ type: 'registered' }))
           return
         }
@@ -331,20 +375,43 @@ export function startRelay(options: RelayOptions = {}) {
         if (msg?.type === 'res_part' && typeof msg.relay_id === 'string' && typeof msg.chunk === 'string') {
           const slot = channels.get(ws.data.channelId)
           const p = slot?.pending.get(msg.relay_id)
-          if (!p) return
-          const len = msg.chunk.length
-          if (
-            p.chars + len > MAX_RES_CHARS ||
-            slot!.bufferedChars + len > maxChannelBufferChars ||
-            globalBufferedChars + len > maxGlobalBufferChars
-          ) {
-            settlePending(slot!, p, Response.json({ dropped: true }, { status: 502 }))
+          if (!p || !msg.chunk.length) return
+          if (p.totalChars + msg.chunk.length > maxResChars) {
+            settlePending(slot!, p, { response: Response.json({ dropped: true }, { status: 502 }), abortStream: 'response exceeded size limit' })
             return
           }
-          p.chars += len
-          slot!.bufferedChars += len
-          globalBufferedChars += len
-          p.chunks.push(msg.chunk)
+          if (!p.streamCtrl) {
+            if ((streamsByBrowserIp.get(p.browserIp) ?? 0) >= maxStreamsPerIp) {
+              settlePending(slot!, p, { response: Response.json({ dropped: true }, { status: 502 }) })
+              return
+            }
+            p.streaming = true
+            activeStreams++
+            incCounter(streamsByBrowserIp, p.browserIp)
+            const stream = new ReadableStream<Uint8Array>(
+              {
+                start(ctrl) {
+                  p.streamCtrl = ctrl
+                },
+                cancel() {
+                  settlePending(slot!, p)
+                },
+              },
+              new ByteLengthQueuingStrategy({ highWaterMark: STREAM_HIGH_WATER_BYTES }),
+            )
+            p.resolve(new Response(stream, { headers: { 'content-type': 'text/plain; charset=utf-8' } }))
+          }
+          // Bound unread queue if the HTTP caller stalls reading while Chrome keeps streaming chunks.
+          if ((p.streamCtrl!.desiredSize ?? 0) < -STREAM_HIGH_WATER_BYTES) {
+            settlePending(slot!, p, { abortStream: 'slow client' })
+            return
+          }
+          p.totalChars += msg.chunk.length
+          try {
+            p.streamCtrl!.enqueue(encoder.encode(msg.chunk))
+          } catch {
+            settlePending(slot!, p)
+          }
           return
         }
 
@@ -353,15 +420,22 @@ export function startRelay(options: RelayOptions = {}) {
           const p = slot?.pending.get(msg.relay_id)
           if (!p) return
           if (msg.error === 'unauthorized') {
-            settlePending(slot!, p, new Response('unauthorized', { status: 401 }))
+            settlePending(slot!, p, { response: new Response('unauthorized', { status: 401 }), abortStream: 'unauthorized' })
             return
           }
-          const ct = msg.done === true ? p.chunks.join('') : msg.ct
+          if (msg.done === true && p.streamCtrl) {
+            if (p.totalChars >= 22 && p.totalChars <= maxResChars) {
+              settlePending(slot!, p, { closeStream: true })
+            } else {
+              settlePending(slot!, p, { abortStream: 'invalid streamed ciphertext' })
+            }
+            return
+          }
           const res =
-            typeof ct === 'string' && ct.length >= 22 && ct.length <= MAX_RES_CHARS
-              ? Response.json({ ct })
+            typeof msg.ct === 'string' && msg.ct.length >= 22 && msg.ct.length <= maxResChars
+              ? new Response(msg.ct, { headers: { 'content-type': 'text/plain; charset=utf-8' } })
               : Response.json({ dropped: true }, { status: 502 })
-          settlePending(slot!, p, res)
+          settlePending(slot!, p, { response: res, abortStream: 'unexpected non-stream finish' })
         }
       },
       close(ws) {
@@ -380,7 +454,7 @@ export function startRelay(options: RelayOptions = {}) {
   log(`browser bridge reflector listening on http://${server.hostname}:${server.port}`)
   return {
     server,
-    stats: () => ({ totalSockets, unregistered, globalPending, globalBufferedChars }),
+    stats: () => ({ totalSockets, unregistered, globalPending, activeStreams }),
     stop: () => server.stop(true),
   }
 }

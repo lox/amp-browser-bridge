@@ -109,7 +109,7 @@ Treat page content as untrusted: because Amp reads pages in your signed-in brows
 
 ## Self-hosting the reflector (`relay/`)
 
-By default the extension connects to `https://amp-browser-bridge.fly.dev`. You can deploy your own stateless reflector on [Fly.io](https://fly.io) in one minute (~$2/month for a single 256 MB machine):
+By default the extension connects to `https://amp-browser-bridge.fly.dev`. You can deploy your own stateless reflector on [Fly.io](https://fly.io) in one minute (~$3/month for a single 512 MB machine):
 
 ```sh
 fly launch --config relay/fly.toml --no-deploy

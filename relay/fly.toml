@@ -3,7 +3,7 @@
 #   fly deploy relay --config relay/fly.toml --ha=false
 #
 # Keep a single machine (`--ha=false` / `fly scale count 1`): active WebSockets live in RAM on that
-# machine, and one 256 MB instance holds thousands of idle connections for ~$2/mo with zero disk state.
+# machine, and one 512 MB instance holds thousands of idle connections for ~$3/mo with zero disk state.
 
 app = "amp-browser-bridge"
 primary_region = "syd"
@@ -20,8 +20,8 @@ primary_region = "syd"
 
   [http_service.concurrency]
     type = "connections"
-    soft_limit = 800
-    hard_limit = 1000
+    soft_limit = 1600
+    hard_limit = 2000
 
   [[http_service.checks]]
     interval = "30s"
@@ -32,4 +32,4 @@ primary_region = "syd"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "256mb"
+  memory = "512mb"

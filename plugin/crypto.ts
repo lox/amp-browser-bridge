@@ -282,11 +282,7 @@ export function createClient(rawKey: string, relayOverride?: string): BridgeClie
         throw new Error(`Unexpected reflector response (HTTP ${res.status}).`)
       }
 
-      let ct: unknown
-      try {
-        ct = JSON.parse(text)?.ct
-      } catch {}
-      const opened = sealed.openResponse(ct)
+      const opened = sealed.openResponse(text)
       if (!opened) {
         const why = "The answer could not be decrypted with this request's ephemeral key."
         if (command) return { status: 502, data: { error: `${why} The outcome is unknown.`, unknown: true } }
