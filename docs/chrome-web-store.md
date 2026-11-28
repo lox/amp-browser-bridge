@@ -217,7 +217,8 @@ Reviewers have no Amp account, so they can run the reflector locally on `127.0.0
 To try the extension locally on 127.0.0.1 without an Amp account:
 
 1. Install Bun (https://bun.sh), then: git clone https://github.com/lox/amp-browser-bridge && cd amp-browser-bridge && bun install && bun relay/server.ts
-2. Install the extension. On the setup page that opens, click "Change reflector", enter http://127.0.0.1:19989, and click Save. Then click "Copy setup key" and save it to ~/.amp-browser-bridge/key.
+2. Install the extension. On the setup page that opens, click "Change reflector", enter http://127.0.0.1:19989, and click Save. Click "Copy setup key", then in a second terminal create the key file with restricted permissions, paste the copied key, press Enter, and press Ctrl-D:
+   install -d -m 700 ~/.amp-browser-bridge && (umask 077 && cat > ~/.amp-browser-bridge/key)
 3. Open any web page, click the extension's toolbar icon, and click "Lend this tab".
 4. Read the page as an Amp thread would:
    bun scripts/call.ts snapshot

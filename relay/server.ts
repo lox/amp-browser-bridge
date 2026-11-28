@@ -12,18 +12,21 @@ const REGISTER_TIMEOUT_MS = 10_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 70_000
 const IDLE_TIMEOUT_S = 90
 const MAX_REQ_BYTES = 256 * 1024
-const MAX_WS_BYTES = 8 * 1024 * 1024
+const MAX_WS_FRAME_BYTES = 64 * 1024
+const MAX_RES_CHARS = 8 * 1024 * 1024
 const MAX_PENDING_PER_CHANNEL = 32
+const MAX_UNREGISTERED_SOCKETS = 64
 
 type Banner = { conn_id: string; b_pk: string; sig: string }
-type Pending = { resolve: (res: Response) => void; timer: Timer }
+type Pending = { resolve: (res: Response) => void; timer: Timer; chunks: string[]; chars: number }
 type Channel = { ws: ServerWebSocket<SocketData>; banner: Banner; pending: Map<string, Pending> }
-type SocketData = { channelId?: string; regTimer?: Timer }
+type SocketData = { channelId?: string; regTimer?: Timer; countedUnregistered?: boolean }
 
 export interface RelayOptions {
   port?: number
   hostname?: string
   forwardTimeoutMs?: number
+  maxUnregistered?: number
   log?: (message: string) => void
 }
 
@@ -61,8 +64,16 @@ function validEnvelope(e: unknown): e is { conn_id: string; req_id: string; c_pk
 
 export function startRelay(options: RelayOptions = {}) {
   const forwardTimeoutMs = options.forwardTimeoutMs ?? DEFAULT_FORWARD_TIMEOUT_MS
+  const maxUnregistered = options.maxUnregistered ?? MAX_UNREGISTERED_SOCKETS
   const log = options.log ?? (() => {})
   const channels = new Map<string, Channel>()
+  let unregistered = 0
+
+  function releaseUnregistered(ws: ServerWebSocket<SocketData>) {
+    if (!ws.data.countedUnregistered) return
+    ws.data.countedUnregistered = false
+    unregistered = Math.max(0, unregistered - 1)
+  }
 
   function dropPending(channel: Channel, status = 502, body: object = { dropped: true }) {
     for (const [id, p] of channel.pending) {
@@ -85,6 +96,9 @@ export function startRelay(options: RelayOptions = {}) {
         const origin = req.headers.get('origin') ?? ''
         if (origin && !origin.startsWith('chrome-extension://')) {
           return new Response('forbidden', { status: 403 })
+        }
+        if (unregistered >= maxUnregistered) {
+          return new Response('too many pending connections', { status: 503 })
         }
         return server.upgrade(req, { data: {} }) ? undefined : new Response('upgrade failed', { status: 400 })
       }
@@ -129,7 +143,7 @@ export function startRelay(options: RelayOptions = {}) {
             slot.pending.delete(relayId)
             resolve(Response.json({ timeout: true }, { status: 504 }))
           }, forwardTimeoutMs)
-          slot.pending.set(relayId, { resolve, timer })
+          slot.pending.set(relayId, { resolve, timer, chunks: [], chars: 0 })
           req.signal.addEventListener(
             'abort',
             () => {
@@ -147,8 +161,10 @@ export function startRelay(options: RelayOptions = {}) {
       return new Response('not found', { status: 404 })
     },
     websocket: {
-      maxPayloadLength: MAX_WS_BYTES,
+      maxPayloadLength: MAX_WS_FRAME_BYTES,
       open(ws) {
+        ws.data.countedUnregistered = true
+        unregistered++
         ws.data.regTimer = setTimeout(() => {
           if (!ws.data.channelId) ws.close(1008, 'registration timed out')
         }, REGISTER_TIMEOUT_MS)
@@ -168,6 +184,7 @@ export function startRelay(options: RelayOptions = {}) {
             return ws.close(1008, 'bad registration')
           }
           clearTimeout(ws.data.regTimer)
+          releaseUnregistered(ws)
           const channelId = channelOf(msg.gate)
           const previous = channels.get(channelId)
           if (previous && previous.ws !== ws) {
@@ -186,6 +203,21 @@ export function startRelay(options: RelayOptions = {}) {
           return
         }
 
+        if (msg?.type === 'res_part' && typeof msg.relay_id === 'string' && typeof msg.chunk === 'string') {
+          const slot = channels.get(ws.data.channelId)
+          const p = slot?.pending.get(msg.relay_id)
+          if (!p) return
+          p.chars += msg.chunk.length
+          if (p.chars > MAX_RES_CHARS) {
+            clearTimeout(p.timer)
+            slot!.pending.delete(msg.relay_id)
+            p.resolve(Response.json({ dropped: true }, { status: 502 }))
+            return
+          }
+          p.chunks.push(msg.chunk)
+          return
+        }
+
         if (msg?.type === 'res' && typeof msg.relay_id === 'string') {
           const slot = channels.get(ws.data.channelId)
           const p = slot?.pending.get(msg.relay_id)
@@ -196,8 +228,9 @@ export function startRelay(options: RelayOptions = {}) {
             p.resolve(new Response('unauthorized', { status: 401 }))
             return
           }
-          if (typeof msg.ct === 'string' && msg.ct.length >= 22) {
-            p.resolve(Response.json({ ct: msg.ct }))
+          const ct = msg.done === true ? p.chunks.join('') : msg.ct
+          if (typeof ct === 'string' && ct.length >= 22 && ct.length <= MAX_RES_CHARS) {
+            p.resolve(Response.json({ ct }))
           } else {
             p.resolve(Response.json({ dropped: true }, { status: 502 }))
           }
@@ -205,6 +238,7 @@ export function startRelay(options: RelayOptions = {}) {
       },
       close(ws) {
         clearTimeout(ws.data.regTimer)
+        releaseUnregistered(ws)
         const id = ws.data.channelId
         if (!id) return
         const slot = channels.get(id)

@@ -13,8 +13,8 @@ afterEach(() => {
   stops = []
 })
 
-function setupRelay(forwardTimeoutMs = 2000) {
-  const r = startRelay({ port: 0, forwardTimeoutMs })
+function setupRelay(forwardTimeoutMs = 2000, maxUnregistered?: number) {
+  const r = startRelay({ port: 0, forwardTimeoutMs, maxUnregistered })
   stops.push(r.stop)
   return { r, base: `http://127.0.0.1:${r.server.port}` }
 }
@@ -41,9 +41,20 @@ async function connectFakeBrowser(base: string, secret: string, handler?: (req: 
         }
         const ans = await handler(opened.request)
         const ct = await opened.sealResponse(ans.status, ans.body)
-        const out = JSON.stringify({ type: 'res', relay_id: msg.relay_id, ct })
-        wireFrames.push(out)
-        ws.send(out)
+        if (ct.length <= 48_000) {
+          const out = JSON.stringify({ type: 'res', relay_id: msg.relay_id, ct })
+          wireFrames.push(out)
+          ws.send(out)
+        } else {
+          for (let i = 0; i < ct.length; i += 48_000) {
+            const part = JSON.stringify({ type: 'res_part', relay_id: msg.relay_id, chunk: ct.slice(i, i + 48_000) })
+            wireFrames.push(part)
+            ws.send(part)
+          }
+          const done = JSON.stringify({ type: 'res', relay_id: msg.relay_id, done: true })
+          wireFrames.push(done)
+          ws.send(done)
+        }
       }
     }
     ws.onerror = reject
@@ -172,4 +183,50 @@ test('disconnect mid-flight returns 502 dropped, and unresponsive browser times 
   })
   expect(r2.status).toBe(502)
   expect(await r2.json()).toEqual({ dropped: true })
+})
+
+test('enforces 64 KiB WebSocket frame cap, chunks large responses, and caps unregistered sockets', async () => {
+  const { base } = setupRelay(2000, 2)
+
+  // Unauthenticated >64 KiB WebSocket frames are rejected at the socket layer (1009 Message Too Big).
+  {
+    const ws = new WebSocket(base.replace('http', 'ws') + '/ext', { headers: { origin: ORIGIN } } as any)
+    stops.push(() => ws.close())
+    const closed = new Promise<number>((resolve) => (ws.onclose = (e) => resolve(e.code)))
+    ws.onopen = () => ws.send('x'.repeat(70 * 1024))
+    expect(await closed).toBe(1009)
+  }
+
+  // Unregistered connection cap blocks socket floods with 503 until slots free up or register.
+  const idle1 = new WebSocket(base.replace('http', 'ws') + '/ext', { headers: { origin: ORIGIN } } as any)
+  const idle2 = new WebSocket(base.replace('http', 'ws') + '/ext', { headers: { origin: ORIGIN } } as any)
+  stops.push(() => {
+    idle1.close()
+    idle2.close()
+  })
+  await Promise.all([new Promise((r) => (idle1.onopen = r)), new Promise((r) => (idle2.onopen = r))])
+  expect((await fetch(`${base}/ext`, { headers: { origin: ORIGIN } })).status).toBe(503)
+  idle1.close()
+  idle2.close()
+  await Bun.sleep(30)
+
+  // Large screenshot-sized (>150 KB) encrypted responses traverse the 64 KiB frame cap via res_part chunks.
+  const secret = generateSecret()
+  const root = deriveRoot(secret)
+  const bigImage = 'J'.repeat(160_000)
+  const browser = await connectFakeBrowser(base, secret, () => ({
+    status: 200,
+    body: JSON.stringify({ result: { mime_type: 'image/jpeg', data: bigImage } }),
+  }))
+  const sealed = sealRequest(root, browser.session.banner, { thread: THREAD, method: 'POST', path: '/call', body: '{"tool":"screenshot"}' })
+  const res = await fetch(`${base}/forward`, {
+    method: 'POST',
+    headers: { 'x-bridge-gate': root.gate, 'content-type': 'application/json' },
+    body: JSON.stringify(sealed.envelope),
+  })
+  expect(res.status).toBe(200)
+  const { ct } = await res.json()
+  const opened = sealed.openResponse(ct)
+  expect(JSON.parse(opened!.body).result.data).toBe(bigImage)
+  expect(browser.wireFrames.filter((f) => f.includes('"res_part"')).length).toBeGreaterThanOrEqual(4)
 })

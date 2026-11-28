@@ -10,9 +10,11 @@ const installed = await until(async () => (await targets()).some((t) => t.type =
 check('the setup page opens by itself on install', installed)
 let setup = cdp((await targets()).find((t) => t.url === SETUP).webSocketDebuggerUrl)
 await showTab(SETUP)
+await until(async () => (await evaluate(setup, `document.readyState === 'complete' && typeof document.getElementById('toggleRelay')?.onclick === 'function' && document.querySelector('#relay .detail').textContent !== ''`)) === true)
 
 // Point at a bad URL first, then at the local reflector via the setup page's form.
 await clickElement(setup, `document.getElementById('toggleRelay')`)
+await until(async () => (await evaluate(setup, `!document.getElementById('relayForm').classList.contains('hidden')`)) === true)
 await evaluate(setup, `document.getElementById('relayInput').value = ''`)
 await clickElement(setup, `document.getElementById('relayInput')`)
 await setup('Input.insertText', { text: 'not-a-url' })

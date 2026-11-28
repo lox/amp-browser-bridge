@@ -154,10 +154,24 @@ async function badge() {
   if (away) await chrome.action.setBadgeBackgroundColor({color: "#ea580c"});
 }
 
+const WS_CHUNK_CHARS = 48_000;
+
 function rawSend(ws, message) {
   if (ws.readyState !== WebSocket.OPEN) return false;
   ws.send(JSON.stringify(message));
   return true;
+}
+
+/** Sends a sealed response within the reflector's 64 KiB per-frame limit by slicing large ciphertexts. */
+function sendSealedResponse(ws, relayId, ct) {
+  if (ct.length <= WS_CHUNK_CHARS) {
+    rawSend(ws, {type: "res", relay_id: relayId, ct});
+    return;
+  }
+  for (let i = 0; i < ct.length; i += WS_CHUNK_CHARS) {
+    if (!rawSend(ws, {type: "res_part", relay_id: relayId, chunk: ct.slice(i, i + WS_CHUNK_CHARS)})) return;
+  }
+  rawSend(ws, {type: "res", relay_id: relayId, done: true});
 }
 
 async function activeLease(now = Date.now()) {
@@ -346,7 +360,7 @@ async function connect() {
         res = jsonResponse(500, {error: String(error?.message || error)});
       }
       const ct = await opened.sealResponse(res.status, res.body);
-      rawSend(ws, {type: "res", relay_id: msg.relay_id, ct});
+      sendSealedResponse(ws, msg.relay_id, ct);
     }
   };
 

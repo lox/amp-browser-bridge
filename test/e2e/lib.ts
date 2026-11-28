@@ -132,7 +132,7 @@ export async function trustedClick(page: Send, x: number, y: number) {
 
 // A trusted click in the middle of the element `selector` returns, a JS expression evaluated in the page.
 export async function clickElement(page: Send, selector: string) {
-  const r = await evaluate(page, `(() => { const e = ${selector}; if (!e) return null; e.scrollIntoView({block: 'center'}); const b = e.getBoundingClientRect(); return {x: b.x + b.width / 2, y: b.y + b.height / 2} })()`)
+  const r = await evaluate(page, `(() => { const e = ${selector}; if (!e) return null; e.scrollIntoView({block: 'center'}); const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 ? {x: b.x + b.width / 2, y: b.y + b.height / 2} : null })()`)
   if (!r) throw new Error(`nothing to click: ${selector}`)
   await trustedClick(page, r.x, r.y)
 }
