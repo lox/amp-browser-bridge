@@ -1,10 +1,11 @@
-// Runs the real plugin in its client role against the bridge: approval dialogs, per-site
-// allowances, the screenshot fallback, and handoff polling and cancelling.
-import { BRIDGE, PAGE, cdp, check, done, evaluate, pageTarget, message, pair, readToken, trustedClick, until, wakeWorker, showTab } from './lib'
+// Runs the real plugin against the blind reflector: tool registration, approval dialogs, per-site
+// allowances, screenshot inline fallback, and handoff polling and cancelling.
+import { PAGE, cdp, check, done, evaluate, message, pageTarget, pair, readSetupKey, showTab, trustedClick, until, wakeWorker } from './lib'
 
-process.env.AMP_BROWSER_BRIDGE_ROLE = 'client'
-process.env.BROWSER_BRIDGE_URL = BRIDGE
-process.env.BROWSER_BRIDGE_TOKEN = await readToken()
+const { send: sw } = await wakeWorker()
+await pair()
+process.env.BROWSER_BRIDGE_KEY = await readSetupKey()
+
 const plugin = (await import('../../plugin/index')).default
 const tools = new Map<string, any>()
 await plugin({ registerTool: (t: any) => tools.set(t.name, t), logger: { log() {} }, onDispose() {}, attachments: { upload: async () => { throw new Error('offline') } } } as any)
@@ -18,18 +19,15 @@ const ref = (re: RegExp, s: string) => s.split('\n').find((l) => re.test(l))?.ma
 {
   const names = [...tools.keys()]
   const core = ['status', 'snapshot', 'screenshot', 'scroll', 'click', 'type', 'navigate', 'handoff', 'open_tab', 'close_tab'].map((t) => `browser_${t}`)
-  check('client role registers the page tools and no pair or publish tool', core.every((t) => tools.has(t)) && names.every((t) => t.startsWith('browser_') && !t.startsWith('browser_bridge_')), names)
+  check('registers the page tools and browser_bridge_connect (no host-only pair or publish)', core.every((t) => tools.has(t)) && tools.has('browser_bridge_connect') && !tools.has('browser_bridge_publish') && !tools.has('browser_bridge_pair'), names)
   // A thread only sees undeferred tools before it searches, so "I lent you a tab" has to land on browser_status.
   const upFront = names.filter((t) => tools.get(t).defer === false)
   check('only browser_status is in the tool list up front, and it says what lending means', upFront.join() === 'browser_status' && /lent \(or will lend\) you a tab/.test(tools.get('browser_status').description), upFront)
 }
 
-const { send: sw } = await wakeWorker()
-await pair()
-check('extension pairs and connects', await until(async () => JSON.parse((await run('browser_status')).ok ?? '{}').extension_connected))
-// The same functions the toolbar popup triggers.
-const lend = (tabId: number) => message({ action: 'lend', tabId: tabId })
-const permissions = (allowActions: boolean, anyOrigin: boolean) => message({ action: 'permissions', allowActions: allowActions, anyOrigin: anyOrigin })
+check('extension connects through the reflector', await until(async () => JSON.parse((await run('browser_status')).ok ?? '{}').extension_connected))
+const lend = (tabId: number) => message({ action: 'lend', tabId })
+const permissions = (allowActions: boolean, anyOrigin: boolean) => message({ action: 'permissions', allowActions, anyOrigin })
 const tabId = await evaluate(sw, `chrome.tabs.query({url: '${PAGE}/*'}).then(t => t[0].id)`)
 // A person lends the tab they're looking at; Chrome drops input to a tab that was never shown.
 await showTab(`${PAGE}/`)
@@ -50,7 +48,7 @@ check('deny: tool fails and nothing is clicked', /denied/.test(denied.err ?? '')
 check('dialog names the element and requires a human', /button “Press me” on http:\/\/127.0.0.1:8765\//.test(dialogs[0]?.message) && dialogs[0]?.requireHuman === true, dialogs[0])
 answer = 'Allow once'
 check('allow once: click lands', (await run('browser_click', { ref: ref(/button "Press me"/, await snapshot()) })).ok && (await snapshot()).includes('"Clicked!"'))
-answer = `Allow on ${PAGE} for this thread`
+answer = `Allow on ${PAGE} in the lent tab for this thread`
 const before = dialogs.length
 await run('browser_type', { ref: ref(/textbox "Search"/, await snapshot()), text: 'from plugin', submit: true })
 check('type dialog quotes the text', /from plugin/.test(dialogs.at(-1).message) && /press Enter/.test(dialogs.at(-1).message))
@@ -97,16 +95,4 @@ await permissions(true, false)
 await run('browser_click', { ref: ref(/button "Press me"/, await snapshot()) })
 check('allowance on one site does not cover another', dialogs.length === n0 + 2, dialogs.length - n0)
 await message({ action: 'stop' })
-// While the thread the bridge was published from is archived, Amp refuses the portal sign-in and
-// nothing reaches the bridge; the error must say how to get the bridge back. In a child process,
-// whose PATH finds a fake amp that refuses like Amp does.
-{
-  const bin = (await Bun.$`mktemp -d`.text()).trim()
-  await Bun.write(`${bin}/amp`, "#!/bin/sh\necho 'Error: Authenticated, but your account is not authorized to perform this action.' >&2\nexit 1\n")
-  await Bun.$`chmod +x ${bin}/amp`
-  const script = `const p = (await import(${JSON.stringify(import.meta.dir + '/../../plugin/index')})).default; const tools = new Map(); await p({ registerTool: (t) => tools.set(t.name, t), logger: { log() {} }, onDispose() {} }); try { await tools.get('browser_status').execute({}, { thread: { id: 'T-00000000-0000-0000-0000-0000000000c1' }, signal: new AbortController().signal }); console.log('no error') } catch (e) { console.log(e.message) }`
-  const child = Bun.spawn(['bun', '-e', script], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, AMP_BROWSER_BRIDGE_ROLE: 'client', BROWSER_BRIDGE_URL: 'https://t-archived-p1.onamp.dev' }, stdout: 'pipe', stderr: 'inherit' })
-  const refused = (await new Response(child.stdout).text()).trim()
-  check('a refused portal sign-in says to unarchive the publishing thread or publish again', /unarchive that thread/.test(refused) && /publish the bridge again/.test(refused), refused)
-}
 done()

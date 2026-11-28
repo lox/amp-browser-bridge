@@ -1,16 +1,19 @@
-// The toolbar popup, clicked as a person does: Finish setup, Lend this tab, the permission boxes,
-// Release, Continue during a handoff, Let Amp open its own tabs with Show and Close, and Stop lending.
-import { EXT, PAGE, api, call, check, done, evaluate, openPopup, pair, shot, targets, until, wakeWorker } from './lib'
+// The toolbar popup, clicked as a person does: Finish setup when disconnected, Lend this tab, the
+// permission boxes, Release, Continue during a handoff, Let Amp open its own tabs with Show and
+// Close, and Stop lending.
+import { EXT, PAGE, api, call, check, done, evaluate, message, openPopup, pair, shot, targets, until, wakeWorker } from './lib'
 
 const A = 'T-00000000-0000-0000-0000-0000000000e1'
 let { send: sw } = await wakeWorker()
 const ev = (expression: string) => evaluate(sw, expression)
 const setupTabs = async () => (await targets()).filter((t) => t.type === 'page' && t.url === `chrome-extension://${EXT}/setup.html`).length
 
-// Unpaired: the popup sends you to the setup page, the one already open rather than a new one.
+// Disconnected from reflector: the popup offers Finish setup and focuses the existing setup tab.
+await message({ action: 'setRelay', relay: 'http://127.0.0.1:19999' })
+await until(async () => (await message({ action: 'state' })).bridgeError !== '')
 let popup = await openPopup(`${PAGE}/`)
-check('unpaired: popup says so', (await popup.text('status')) === 'Not paired' && (await popup.visible('openSetup')), await popup.text('status'))
-await shot('1-not-paired')
+check('disconnected: popup says so and offers Finish setup', (await popup.text('status')) === 'Disconnected' && (await popup.visible('openSetup')), await popup.text('status'))
+await shot('1-disconnected')
 const before = await setupTabs()
 await popup.click('openSetup')
 check('Finish setup focuses the open setup page', await until(async () => (await ev(`chrome.tabs.query({active: true, currentWindow: true}).then(t => t[0].url)`)) === `chrome-extension://${EXT}/setup.html`))
@@ -19,13 +22,13 @@ check('…without opening another', (await setupTabs()) === before && before ===
 await pair()
 await until(async () => (await api('/status', null)).extension_connected)
 popup = await openPopup(`${PAGE}/`)
-check('paired: Connected, no tab lent', (await popup.text('status')) === 'Connected' && (await popup.text('detail')) === 'No tab lent.')
+check('connected: Connected, no tab lent', (await popup.text('status')) === 'Connected' && (await popup.text('detail')) === 'No tab lent.')
 check('agent-tab box shows, unticked', (await popup.visible('allowAgentTabs')) && !(await popup.checked('allowAgentTabs')))
 
 await popup.click('lend')
 check('Lend this tab lends the active tab read-only', await until(async () => (await popup.text('status')) === 'Lent read-only'))
 const st = await api('/status', null)
-check('the bridge sees the page, read-only', st.tab?.url === `${PAGE}/` && st.tab.allow_actions === false, st.tab)
+check('Amp sees the page, read-only', st.tab?.url === `${PAGE}/` && st.tab.allow_actions === false, st.tab)
 check('popup names the page', (await popup.text('detail')) === 'Bridge test page')
 await shot('2-lent')
 await popup.click('allowActions')
@@ -71,7 +74,7 @@ const second = (await call(A, 'open_tab', { url: `${PAGE}/other.html` })).result
 await popup.close()
 popup = await openPopup(`${PAGE}/`)
 await popup.click('allowAgentTabs')
-check('unticking it closes Amp\'s tabs', await until(async () => !(await ev(`chrome.tabs.get(${second}).then(() => true, () => false)`))))
+check("unticking it closes Amp's tabs", await until(async () => !(await ev(`chrome.tabs.get(${second}).then(() => true, () => false)`))))
 check('…but not the lent tab', (await api('/status', null)).tab?.url === `${PAGE}/`)
 
 await popup.click('stop')

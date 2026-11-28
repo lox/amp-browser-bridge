@@ -1,0 +1,35 @@
+# Deploy `relay/` as its own 4 KB build context (either from the repo root or inside `relay/`):
+#   fly launch --config relay/fly.toml --no-deploy
+#   fly deploy relay --config relay/fly.toml --ha=false
+#
+# Keep a single machine (`--ha=false` / `fly scale count 1`): active WebSockets live in RAM on that
+# machine, and one 256 MB instance holds thousands of idle connections for ~$2/mo with zero disk state.
+
+app = "amp-browser-bridge"
+primary_region = "syd"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 800
+    hard_limit = 1000
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "5s"
+    method = "GET"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

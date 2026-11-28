@@ -1,230 +1,115 @@
 import type { PluginAPI, PluginToolContext } from '@ampcode/plugin'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { DEFAULT_PORT, readPublished, setupPageID, signRequest, startBridge, tokenFile, verifyResponse, writePublished, type Published } from './host'
+import { createClient, parseKey, type BridgeClient } from './crypto'
 
-export const description = "Lets Amp threads, including orbs, use one Chrome tab you lend on your Mac. On the Mac it runs the bridge; elsewhere it reaches the bridge through a runner portal."
+export const description = 'Lets Amp threads across orbs and runners use one Chrome tab you lend, or background tabs they open, end-to-end encrypted through a blind reflector.'
 
 const dir = join(homedir(), '.amp-browser-bridge')
-const port = Number(process.env.BROWSER_BRIDGE_PORT ?? DEFAULT_PORT)
+const keyFile = join(dir, 'key')
 
-/** host: run the bridge here (the computer with Chrome). client: reach it through BROWSER_BRIDGE_URL. */
-function role(): 'host' | 'client' | 'off' {
-  const r = process.env.AMP_BROWSER_BRIDGE_ROLE
-  if (r === 'host' || r === 'client' || r === 'off') return r
-  return process.platform === 'darwin' ? 'host' : 'client'
+let sessionKey = ''
+let cachedKey = ''
+let cachedRelay = ''
+let cachedClient: BridgeClient | null = null
+
+function storedKey(): string {
+  if (sessionKey) return sessionKey
+  const fromEnv = (process.env.BROWSER_BRIDGE_KEY ?? '').trim()
+  if (fromEnv) return fromEnv
+  if (existsSync(keyFile)) return readFileSync(keyFile, 'utf8').trim()
+  return ''
 }
 
-// ---- Talking to the bridge ----
-
-type Target = { base: string; token: string; portal: boolean }
-let portalCookie = ''
-
-async function portalLogin(base: string, signal?: AbortSignal) {
-  const proc = Bun.spawn(['amp', 'portal', 'login-url', base + '/'], { stdout: 'pipe', stderr: 'pipe' })
-  const out = await new Response(proc.stdout).text()
-  if ((await proc.exited) !== 0) {
-    const why = (await new Response(proc.stderr).text()).trim()
-    // Amp refuses sign-in to a portal whose thread is archived, before anything reaches the Mac.
-    if (/not authorized/i.test(why)) throw new Error(`Amp refused the sign-in to the browser bridge's portal (${why.replace(/^Error:\s*/, '')}). It does this when the thread the bridge was published from is archived. Ask the user to unarchive that thread (the extension's setup page links it), or to publish the bridge again from a thread on their Mac; then run \`amp orb restart-processes\` here.`)
-    throw new Error(`amp portal login-url failed: ${why}`)
+async function savePersonalSecret(cleanKey: string): Promise<{ ok: boolean; note?: string }> {
+  try {
+    const proc = Bun.spawn(['amp', 'secrets', 'set', '--user', '--secret', 'BROWSER_BRIDGE_KEY', '--data-file', '-'], {
+      env: process.env,
+      stdin: new Blob([cleanKey]),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    const [, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
+    if (code === 0) return { ok: true }
+    if (/Code running in an orb/i.test(err)) {
+      return { ok: false, note: 'Connected for this orb. To save BROWSER_BRIDGE_KEY for future orbs, use manage_amp (topic: "secrets", operation: "set") or Amp Settings.' }
+    }
+    return { ok: false, note: `Saved on this machine, but could not set personal Amp secret BROWSER_BRIDGE_KEY (${err.trim() || `exit ${code}`}).` }
+  } catch {
+    return { ok: false, note: 'Saved on this machine (`amp` CLI not on PATH, so personal secret BROWSER_BRIDGE_KEY was not updated for orbs).' }
   }
-  const loginURL = out.split(/\s+/).find((word) => word.startsWith('https://'))
-  if (!loginURL) throw new Error('amp portal login-url printed no URL.')
-  const res = await fetch(loginURL, { redirect: 'manual', signal })
-  const cookies = res.headers.getSetCookie().map((c) => c.split(';')[0])
-  if (!cookies.length) throw new Error(`Portal sign-in set no cookie (HTTP ${res.status}). Is the bridge still published?`)
-  portalCookie = cookies.join('; ')
 }
 
-/**
- * Sends one request to the bridge. Only a portal sign-in redirect, which the bridge never saw, is
- * retried. When a command may have reached the bridge and its answer was lost (a proxy error or a
- * dropped connection), the reply is `{unknown: true}`: browser actions are never sent twice.
- */
-async function request(target: Target, thread: string, path: string, init: RequestInit & { signal?: AbortSignal } = {}): Promise<any> {
-  const command = path === '/call'
-  const method = init.method ?? 'GET'
-  const body = typeof init.body === 'string' ? init.body : ''
-  for (let attempt = 0; attempt < 2; attempt++) {
-    if (target.portal && !portalCookie) await portalLogin(target.base, init.signal)
-    // The token never goes over the wire: whatever holds the bridge's port sees only a single-use signature.
-    const auth = signRequest(target.token, { method, path, thread, body })
-    let res: Response
-    let text: string
-    try {
-      res = await fetch(target.base + path, {
-        ...init,
-        redirect: 'manual',
-        headers: { ...(init.headers ?? {}), ...(target.portal ? { cookie: portalCookie } : {}), 'x-bridge-auth': auth.header, 'x-amp-thread': thread, 'content-type': 'application/json' },
-      })
-      text = await res.text()
-    } catch (error: any) {
-      // Even a cancelled call may already be running on the bridge.
-      if (command) return { error: `The request to the bridge ${init.signal?.aborted ? 'was cancelled' : `failed (${error?.message ?? error})`}; the outcome is unknown.`, unknown: true }
-      throw error
-    }
-    // The portal answers 502-504 while the runner restarts; the bridge itself never does.
-    if (!command && target.portal && res.status >= 502 && res.status <= 504) {
-      throw Object.assign(new Error(`The bridge portal is temporarily unavailable (HTTP ${res.status}).`), { transient: true })
-    }
-    if ((res.headers.get('content-type') ?? '').includes('application/json')) {
-      if (verifyResponse(target.token, auth.nonce, res.status, text, res.headers.get('x-bridge-proof'))) return JSON.parse(text)
-      // A program other than the bridge holds its port, or the answer was changed on the way.
-      const why = "The answer did not come from your browser bridge (its signature is missing or wrong). Check that no other program holds the bridge's port on the Mac and that the plugin is the same version there and here."
-      if (command) return { error: `${why} The outcome is unknown.`, unknown: true }
-      throw new Error(why)
-    }
-    if (res.status === 401 && text === 'unauthorized') {
-      throw new Error("The bridge rejected this request's signature. Publish the bridge again from a thread on the Mac so BROWSER_BRIDGE_TOKEN is current, update the plugin if the Mac's is a different version, and check that both clocks are right.")
-    }
-    if (target.portal && res.status >= 300 && res.status < 400 && attempt === 0) {
-      // The portal wants a fresh sign-in; the request never reached the bridge.
-      portalCookie = ''
-      continue
-    }
-    if (command) return { error: `The bridge answered HTTP ${res.status} without a result; the outcome is unknown.`, unknown: true }
-    throw new Error(`Unexpected bridge response (HTTP ${res.status}). If this persists, publish the bridge again from a thread on the Mac.`)
+async function promptForKey(ctx: PluginToolContext): Promise<{ key: string; savedForOrbs: boolean; note?: string } | null> {
+  if (typeof ctx.ui?.confirm !== 'function') return null
+  let ans: Record<string, string> | undefined
+  try {
+    ans = await ctx.ui.confirm({
+      title: 'Connect Amp Browser Bridge',
+      message: 'In Chrome, click the **Amp Browser Bridge** icon → **Setup and status** → **Copy setup key**, then paste it below.',
+      confirmButtonText: 'Connect',
+      requireHuman: true,
+      fields: [
+        { name: 'key', label: 'Setup key', value: '', placeholder: 'abb1_…', secret: true },
+        { name: 'orbs', type: 'checkbox', label: 'Also save as personal Amp secret BROWSER_BRIDGE_KEY for future orbs', value: 'true' },
+      ],
+    })
+  } catch {
+    return null
   }
-  throw new Error('Could not sign in to the bridge portal. Publish the bridge again from a thread on the Mac.')
+  const entered = ans?.key?.trim()
+  if (!entered) return null
+  parseKey(entered, process.env.BROWSER_BRIDGE_RELAY)
+  sessionKey = entered
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    writeFileSync(keyFile, entered + '\n', { mode: 0o600 })
+  } catch {
+    // Keep in memory for this session even if HOME is read-only.
+  }
+  if (ans?.orbs === 'true') {
+    const saved = await savePersonalSecret(entered)
+    return { key: entered, savedForOrbs: saved.ok, note: saved.note }
+  }
+  return { key: entered, savedForOrbs: false }
 }
 
-async function call(target: Target, ctx: PluginToolContext, tool: string, args: Record<string, unknown>) {
-  const reply = await request(target, ctx.thread.id, '/call', { method: 'POST', body: JSON.stringify({ tool, args }), signal: ctx.signal })
+async function clientFor(ctx: PluginToolContext): Promise<BridgeClient> {
+  let raw = storedKey()
+  if (!raw) {
+    const prompted = await promptForKey(ctx)
+    raw = prompted?.key ?? ''
+  }
+  if (!raw) {
+    throw new Error(
+      'The browser bridge is not set up on this machine: BROWSER_BRIDGE_KEY is missing. Ask the user to copy the setup key from Chrome (Amp Browser Bridge icon → Setup and status → Copy setup key), then call browser_bridge_connect or save it as personal secret BROWSER_BRIDGE_KEY.',
+    )
+  }
+  const relayOverride = (process.env.BROWSER_BRIDGE_RELAY ?? '').trim()
+  if (!cachedClient || cachedKey !== raw || cachedRelay !== relayOverride) {
+    cachedClient = createClient(raw, relayOverride || undefined)
+    cachedKey = raw
+    cachedRelay = relayOverride
+  }
+  return cachedClient
+}
+
+async function call(client: BridgeClient, ctx: PluginToolContext, tool: string, args: Record<string, unknown>) {
+  const reply = await client.call(ctx.thread.id, tool, args, ctx.signal)
   if (reply.error) throw new Error(reply.unknown ? `${reply.error} Check the page before retrying.` : reply.error)
   return reply.result
 }
 
-// ---- Publishing and pairing on the Mac ----
-
-async function ampCLI(args: string[], stdin?: string) {
-  // A runner portal's hostname depends on the directory `amp orb portal` runs in. The plugin's own
-  // directory changes with every plugin version, so run from the bridge's directory to keep the URL.
-  const proc = Bun.spawn(['amp', ...args], { cwd: dir, stdin: stdin === undefined ? 'ignore' : new Blob([stdin]), stdout: 'pipe', stderr: 'pipe' })
-  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
-  if (code !== 0) throw new Error(`amp ${args.slice(0, 3).join(' ')} failed: ${(err || out).trim()}`)
-  return out
-}
-
-/**
- * A runner portal published from a directory the runner doesn't serve answers 503 within seconds.
- * Returns a warning when the runner that runs `thread` doesn't serve the bridge's directory, and
- * nothing when it does or when no runner reports its directories. When the thread's runner is
- * unknown, it checks every runner on this computer.
- */
-async function unservedWarning(owner: string | undefined) {
-  let runners: { runnerId: string; workingDirectory: string; serveCwd: boolean; directories: { path: string }[] }[]
-  try {
-    runners = JSON.parse(await ampCLI(['runner', 'list', '--json'])).runners ?? []
-  } catch {
-    return undefined
-  }
-  const mine = runners.filter((r) => r.runnerId === owner)
-  if (mine.length) runners = mine
-  if (!runners.length) return undefined
-  const served = runners.flatMap((r) => [...(r.serveCwd ? [r.workingDirectory] : []), ...r.directories.map((d) => d.path)])
-  if (served.some((p) => dir === p || dir.startsWith(p.replace(/\/$/, '') + '/'))) return undefined
-  const runner = mine.length ? ` runner ${owner}` : ' runner on this computer'
-  return `The${runner} doesn't serve ${dir}, so its portal stops answering within seconds. Serve it with \`amp runner dirs add${mine.length ? ` --runner-id ${owner}` : ''} '${dir}'\` (or run the runner from a directory that contains it), then publish again.`
-}
-
-/**
- * Serves the bridge through `thread`'s runner portal and points the orbs' secrets at it. The portal
- * belongs to the thread: while the thread is archived, Amp refuses orbs' sign-in to it, so this
- * refuses an archived thread. The bridge calls this on every start and every REPUBLISH_MS, because
- * after a runner restart the portal answers 503 until it is published again.
- */
-async function publishNow(thread: string, force: boolean): Promise<Published & { warning?: string }> {
-  // Fails closed: without the thread's state, publishing could keep orbs locked out unnoticed. The
-  // export has `archived: true` for an archived thread and no `archived` at all for a live one.
-  const info: { archived?: boolean; env?: { initial?: { runnerID?: string } } } = JSON.parse(await ampCLI(['threads', 'export', thread]))
-  if (info.archived !== undefined && info.archived !== false) throw new Error(`Thread ${thread} is archived, and Amp refuses orbs' sign-in to an archived thread's portal. Unarchive it, or publish the bridge again from a thread on this Mac.`)
-  // Runner portals get an auto-generated hostname (custom hostnames answer 503 on runners).
-  const out = await ampCLI(['orb', 'portal', String(port), '--thread', thread, '--title', 'Browser bridge', '--description', 'Amp browser bridge; requires its token'])
-  const url = out.split(/\s+/).filter((w) => w.startsWith('https://')).pop()?.replace(/\/$/, '')
-  if (!url) throw new Error(`amp orb portal printed no URL: ${out.trim()}`)
-  if (force || readPublished(dir)?.url !== url) {
-    await ampCLI(['secrets', 'set', '--user', 'BROWSER_BRIDGE_TOKEN', '--data-file', tokenFile(dir)])
-    await ampCLI(['secrets', 'set', '--user', '--env', 'BROWSER_BRIDGE_URL', '--data-file', '-'], url)
-  }
-  const published = { url, thread, at: new Date().toISOString() }
-  writePublished(dir, published)
-  rememberThread(thread)
-  return { ...published, warning: await unservedWarning(info.env?.initial?.runnerID) }
-}
-
-/**
- * The thread last published through. It outlives a cleared published.json, in memory and in a file,
- * so the timer can recover once the thread is unarchived or the runner is back, even after a restart.
- */
-const lastThreadFile = join(dir, 'publish-thread')
-let lastThread: string | undefined = existsSync(lastThreadFile) ? readFileSync(lastThreadFile, 'utf8').trim() || undefined : undefined
-function rememberThread(thread: string) {
-  lastThread = thread
-  writeFileSync(lastThreadFile, thread + '\n', { mode: 0o600 })
-}
-let publishing: Promise<unknown> = Promise.resolve()
-
-/**
- * Publishes one at a time, so a timer republish can't finish after a newer explicit publish and
- * undo it. Without a thread it uses the one last published through, chosen once its turn comes.
- */
-function publish(thread: string | undefined, force: boolean) {
-  const run = publishing.then(() => {
-    const through = thread ?? readPublished(dir)?.thread ?? lastThread
-    if (!through) throw new Error('The bridge has never been published.')
-    return publishNow(through, force)
-  })
-  publishing = run.catch(() => {})
-  return run
-}
-
-/** How often the bridge publishes its portal again; BROWSER_BRIDGE_REPUBLISH_MS is for tests. */
-const REPUBLISH_MS = Number(process.env.BROWSER_BRIDGE_REPUBLISH_MS ?? 15 * 60_000)
-
-/** Publishes again through the thread the user last published from, if any. */
-async function republish(log: (m: string) => void, stopped: () => boolean) {
-  // Recorded before trying, so a bridge from before publish-thread existed keeps its thread too.
-  const previous = readPublished(dir)?.thread
-  if (previous) rememberThread(previous)
-  if (!lastThread) return
-  // The runner may still be starting; give up after about five minutes.
-  for (let attempt = 1; !stopped(); attempt++) {
-    try {
-      const { url, warning } = await publish(undefined, false)
-      log(`republished the bridge at ${url}${warning ? `. ${warning}` : ''}`)
-      return
-    } catch (error: any) {
-      if (attempt === 4) {
-        log(`could not republish the bridge through thread ${lastThread}: ${error?.message ?? error}`)
-        // Tell the setup page, so it asks the user to publish again from a thread on the Mac.
-        writePublished(dir, null)
-        return
-      }
-      await Bun.sleep(attempt * 30_000)
-    }
-  }
-}
-
-/** Opens the extension's setup page in Chrome on this Mac. The code stays in the URL fragment, on this Mac. */
-async function openSetupPage(code: string) {
-  if (process.platform !== 'darwin') return false
-  const url = `chrome-extension://${setupPageID(dir)}/setup.html#code=${encodeURIComponent(code)}`
-  for (const args of [['-a', 'Google Chrome', url], [url]]) {
-    if ((await Bun.spawn(['open', ...args], { stdout: 'ignore', stderr: 'ignore' }).exited) === 0) return true
-  }
-  return false
-}
-
 // ---- Approval for actions that change the page ----
 
-/** "Allow for this thread" answers, per thread and site: `${thread} ${origin}`. */
+/** "Allow for this thread" answers, per thread and site: `${thread} ${own|lent} ${origin}`. */
 const allowed = new Set<string>()
 
-async function approve(target: Target, ctx: PluginToolContext, tool: string, input: Record<string, unknown>) {
+async function approve(client: BridgeClient, ctx: PluginToolContext, tool: string, input: Record<string, unknown>) {
   // Don't ask the user to approve something the extension will refuse anyway.
-  const { tab, agent_tabs } = await request(target, ctx.thread.id, '/status', { signal: ctx.signal })
+  const { extension_connected, tab, agent_tabs, lease } = await client.request(ctx.thread.id, '/status', { signal: ctx.signal })
+  if (!extension_connected) throw new Error('The browser extension is not connected to the reflector. Ask the user to open Chrome.')
   const own = tool === 'open_tab' || input.tab != null
   if (own) {
     if (!agent_tabs?.enabled) throw new Error('The user has not let Amp open its own tabs. Ask them to turn on "Let Amp open its own tabs" in the extension popup.')
@@ -232,6 +117,9 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
   } else {
     if (!tab) throw new Error('No tab is lent. Ask the user to open the page and click Lend this tab in the extension popup, or open a tab of your own with browser_open_tab.')
     if (!tab.allow_actions) throw new Error('This tab is lent read-only. Ask the user to turn on "Allow clicks, typing and navigation" in the extension popup.')
+    if (lease && lease.thread !== ctx.thread.id) {
+      throw new Error(`The lent tab is in use by thread ${lease.thread}. Ask the user to release it from the extension popup, or wait until it has been idle for 10 minutes.`)
+    }
   }
   let url: URL | null = null
   let d: { role?: string; name?: string; url: string; secret?: boolean; doc?: string; focused?: number } | null = null
@@ -247,7 +135,7 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
     }
   } else {
     // Without a ref (press on whatever has focus), describe returns only the page's URL.
-    d = await call(target, ctx, 'describe', { ref: input.ref, tab: input.tab })
+    d = await call(client, ctx, 'describe', { ref: input.ref, tab: input.tab })
     // A key for whatever has focus goes only to the page the user approved it on.
     if (tool === 'press' && !input.ref && d?.doc) Object.assign(input, { doc: d.doc, url: d.url, focused: d.focused })
     // A value the prompt hid stays hidden in the result, even if the field stops being a password.
@@ -260,9 +148,10 @@ async function approve(target: Target, ctx: PluginToolContext, tool: string, inp
   if (allowed.has(key)) return
   let what: string
   if (url) {
-    what = tool === 'open_tab'
-      ? `Open ${url.href} (site **${url.origin}**) in a new background tab.`
-      : `Open ${url.href} (site **${url.origin}**) in ${own ? `Amp's tab ${input.tab}` : `the tab lent on ${tab.origin}`}.`
+    what =
+      tool === 'open_tab'
+        ? `Open ${url.href} (site **${url.origin}**) in a new background tab.`
+        : `Open ${url.href} (site **${url.origin}**) in ${own ? `Amp's tab ${input.tab}` : `the tab lent on ${tab.origin}`}.`
   } else {
     const element = d!.role ? `${d!.role}${d!.name ? ` “${d!.name}”` : ''}` : 'the focused element'
     const enter = input.submit ? ', then press Enter' : ''
@@ -329,134 +218,52 @@ const tools: { name: string; title: string; description: string; properties?: Re
   { name: 'handoff', title: 'Hand tab to user', description: 'Show the user a card on a tab and wait (up to 30 minutes) until they click Continue. Use for logins, 2FA, captchas, bot checks and payments; never solve a captcha or do those yourself, and don\'t retry a site that blocks you. If an earlier call failed while this thread\'s card was still showing, calling it again waits for that card instead of showing a new one.', properties: { message: { type: 'string', description: 'What the user should do, e.g. "Sign in to GitHub, then click Continue".' }, tab }, required: ['message'] },
 ]
 
-async function handoff(target: Target, ctx: PluginToolContext, message: string, tab: unknown) {
-  // If this thread's earlier call lost its wait, the bridge hands back that card instead of a new one.
-  const { handoff_id: id, resumed, message: shown } = await call(target, ctx, 'handoff', { message, tab })
-  // Poll in short requests: a single half-hour request would not survive the portal proxy.
+async function handoff(client: BridgeClient, ctx: PluginToolContext, message: string, tab: unknown) {
+  // If this thread's earlier call lost its wait, Chrome hands back that card instead of a new one.
+  const { handoff_id: id, resumed, message: shown } = await call(client, ctx, 'handoff', { message, tab })
+  // Poll in 25s slices so idle HTTP timeouts on proxies never cut off a 30-minute wait.
   let outage = 0
   while (!ctx.signal.aborted) {
     let reply: any
     try {
-      reply = await request(target, ctx.thread.id, `/handoff/${id}?wait=25000`, { signal: ctx.signal })
+      reply = await client.request(ctx.thread.id, `/handoff/${id}?wait=25000`, { signal: ctx.signal })
       outage = 0
     } catch (error: any) {
       if (ctx.signal.aborted) break
-      // Keep waiting through a short portal outage; the card stays on the page meanwhile.
       if (error?.transient && ++outage <= 40) {
         await Bun.sleep(3000)
         continue
       }
-      // The card may still be on the page, and the user may still finish there.
       throw new Error(`Lost the wait for the handoff (${error?.message ?? error}). The card may still be showing: call browser_handoff again to keep waiting for it, or browser_status to see whether the user continued.`)
     }
     if (reply.error) throw new Error(reply.error)
     if (!reply.result?.waiting) return JSON.stringify(resumed ? { ...reply.result, resumed_handoff: shown } : reply.result)
   }
-  await request(target, ctx.thread.id, `/handoff/${id}/cancel`, { method: 'POST' }).catch(() => {})
+  await client.request(ctx.thread.id, `/handoff/${id}/cancel`, { method: 'POST' }).catch(() => {})
   throw new Error('Cancelled.')
 }
 
 export default async function (amp: PluginAPI) {
-  const mode = role()
-  if (mode === 'off') return
+  if (process.env.AMP_BROWSER_BRIDGE_ROLE === 'off') return
 
-  let local: Target | null = null
-  if (mode === 'host') {
-    let bridge: ReturnType<typeof startBridge> | null = null
-    let stopped = false
-    let keepPublished: Timer | undefined
-    let republishing = false
-    let failures = 0
-    // After a runner restart the portal answers 503 until it is published again, so the process
-    // running the bridge publishes it again on a timer. Same URL each time, so no secrets change.
-    // After two failures in a row it clears published.json, so the setup page asks to publish
-    // again, and keeps trying through the same thread, which turns the page green once it works.
-    const refresh = async () => {
-      if (republishing || (!lastThread && !readPublished(dir))) return
-      republishing = true
-      try {
-        const { warning } = await publish(undefined, false)
-        failures = 0
-        if (warning) amp.logger.log(warning)
-      } catch (error: any) {
-        amp.logger.log(`could not republish the bridge through thread ${lastThread}: ${error?.message ?? error}`)
-        if (++failures === 2) writePublished(dir, null)
-      } finally {
-        republishing = false
-      }
-    }
-    // Several Amp processes on one Mac load this plugin; the first to bind the port runs the bridge
-    // and the others keep trying, so the bridge survives whichever process owns it exiting.
-    const tryStart = () => {
-      if (bridge) return
-      try {
-        bridge = startBridge({ dir, port, log: (m) => amp.logger.log(m) })
-        void republish((m) => amp.logger.log(m), () => stopped)
-        keepPublished = setInterval(refresh, REPUBLISH_MS)
-      } catch (error: any) {
-        if (error?.code !== 'EADDRINUSE') amp.logger.log(`bridge failed to start: ${error?.message ?? error}`)
-      }
-    }
-    tryStart()
-    const retry = setInterval(tryStart, 15_000)
-    amp.onDispose(() => {
-      stopped = true
-      clearInterval(retry)
-      clearInterval(keepPublished)
-      bridge?.stop()
-    })
-    local = { base: `http://127.0.0.1:${port}`, token: '', portal: false }
-
-    amp.registerTool({
-      name: 'browser_bridge_publish',
-      title: 'Publish browser bridge',
-      description: "Expose this Mac's browser bridge to the user's orbs: registers this thread's portal for it and stores BROWSER_BRIDGE_URL and BROWSER_BRIDGE_TOKEN as the user's personal Amp secrets. Run it in a thread on the Mac when the user asks to set up or republish the browser bridge. Afterwards the bridge publishes itself again when it starts and every 15 minutes, through this thread; tell the user to keep it unarchived, since Amp refuses orbs' sign-in to an archived thread's portal. If the result has a warning, tell the user how to fix it.",
-      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-      async execute(_input, ctx) {
-        const ok = await ctx.ui.confirm({
-          title: 'Publish the browser bridge to your orbs?',
-          message: `This thread's portal will serve the bridge on port ${port}, and your personal Amp secrets BROWSER_BRIDGE_URL and BROWSER_BRIDGE_TOKEN will be updated so new orbs can reach it. The bridge re-registers the portal when it starts and every 15 minutes, and updates these secrets itself if the URL changes. Only you can open the portal, and only while this thread is unarchived.`,
-          confirmButtonText: 'Publish',
-          requireHuman: true,
-        })
-        if (!ok) throw new Error('The user cancelled publishing.')
-        const { url, warning } = await publish(ctx.thread.id, true)
-        return JSON.stringify({ portal_url: url, ...(warning ? { warning } : {}), note: 'New orbs get these secrets when they start; running orbs need `amp orb restart-processes`. The bridge publishes itself again on every start and every 15 minutes through this thread. Keep it unarchived: Amp refuses orbs\' sign-in to an archived thread\'s portal.' })
-      },
-    })
-
-    amp.registerTool({
-      name: 'browser_bridge_pair',
-      title: 'Pair Chrome extension',
-      description: "Pair the Chrome extension with this Mac's bridge: makes a one-time pairing code, valid for 10 minutes, and opens the extension's setup page in Chrome on this Mac with the code in it, so the extension pairs by itself. The code never leaves the Mac and is never returned.",
-      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-      async execute(_input, ctx) {
-        const reply = await request(target(), ctx.thread.id, '/pair', { method: 'POST', signal: ctx.signal })
-        if (reply.error) throw new Error(reply.error)
-        const code = readFileSync(join(dir, 'pairing-code'), 'utf8').trim()
-        const opened = await openSetupPage(code)
-        return JSON.stringify({
-          valid_minutes: reply.result.valid_minutes,
-          next: opened
-            ? "The extension's setup page opened in Chrome on this Mac and pairs by itself. If it shows an error, ask the user to load the extension (see the README) and pair again."
-            : 'Chrome could not be opened. Ask the user to run `cat ~/.amp-browser-bridge/pairing-code` on the Mac and enter the code on the extension\'s setup page (extension popup → Setup and status).',
-        })
-      },
-    })
-  }
-
-  function target(): Target {
-    if (local) {
-      const token = existsSync(tokenFile(dir)) ? readFileSync(tokenFile(dir), 'utf8').trim() : ''
-      if (!token) throw new Error('The bridge on this Mac has not started yet.')
-      return { ...local, token }
-    }
-    const base = (process.env.BROWSER_BRIDGE_URL ?? '').trim().replace(/\/$/, '')
-    const token = (process.env.BROWSER_BRIDGE_TOKEN ?? '').trim()
-    if (!base || !token) throw new Error('The browser bridge is not set up for this machine: BROWSER_BRIDGE_URL and BROWSER_BRIDGE_TOKEN are missing. Ask the user to run browser_bridge_publish in an Amp thread on their Mac (see the amp-browser-bridge README).')
-    // An https URL is an Amp portal and needs a portal sign-in; plain http reaches the bridge directly.
-    return { base, token, portal: base.startsWith('https://') }
-  }
+  amp.registerTool({
+    name: 'browser_bridge_connect',
+    title: 'Connect browser bridge',
+    description: "Set or replace this machine's Amp Browser Bridge setup key (`abb1_…` from Chrome's Setup and status page) in a private secret dialog, saving it locally in `~/.amp-browser-bridge/key` and optionally as the user's personal `BROWSER_BRIDGE_KEY` secret for future orbs.",
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    async execute(_input, ctx) {
+      const prompted = await promptForKey(ctx)
+      if (!prompted) throw new Error('Setup key entry was cancelled.')
+      cachedClient = null
+      const client = await clientFor(ctx)
+      const status = await client.request(ctx.thread.id, '/status', { signal: ctx.signal })
+      return JSON.stringify({
+        extension_connected: !!status.extension_connected,
+        saved_for_orbs: prompted.savedForOrbs,
+        ...(prompted.note ? { note: prompted.note } : {}),
+      })
+    },
+  })
 
   for (const t of tools) {
     amp.registerTool({
@@ -467,18 +274,18 @@ export default async function (amp: PluginAPI) {
       description: `${t.description} Acts in the user's real, signed-in Chrome.`,
       inputSchema: { type: 'object', properties: t.properties ?? {}, required: t.required ?? [], additionalProperties: false },
       async execute(input, ctx) {
-        const to = target()
+        const client = await clientFor(ctx)
         if (t.name === 'status') {
-          const s = await request(to, ctx.thread.id, '/status', { signal: ctx.signal })
-          if (!s.extension_connected) return JSON.stringify({ ...s, next: 'Ask the user to open Chrome; the extension connects to the bridge by itself.' })
+          const s = await client.request(ctx.thread.id, '/status', { signal: ctx.signal })
+          if (!s.extension_connected) return JSON.stringify({ ...s, next: 'Ask the user to open Chrome; the extension connects by itself.' })
           if (!s.tab && !s.agent_tabs?.enabled) return JSON.stringify({ ...s, next: 'Ask the user to open the page and click Lend this tab in the extension popup.' })
           if (s.handoff?.state === 'waiting') return JSON.stringify({ ...s, next: 'Your handoff card is still waiting for the user. Call browser_handoff again to wait for it; the tab stays theirs until they click Continue.' })
           return JSON.stringify(s)
         }
-        if (t.name === 'handoff') return handoff(to, ctx, String(input.message ?? ''), input.tab)
-        if (MUTATING.has(t.name) || t.name === 'open_tab') await approve(to, ctx, t.name, input)
+        if (t.name === 'handoff') return handoff(client, ctx, String(input.message ?? ''), input.tab)
+        if (MUTATING.has(t.name) || t.name === 'open_tab') await approve(client, ctx, t.name, input)
         if (ctx.signal.aborted) throw new Error('Cancelled.')
-        const result = await call(to, ctx, t.name, input)
+        const result = await call(client, ctx, t.name, input)
         if (t.name === 'screenshot') {
           try {
             const { url } = await amp.attachments.upload({ data: Buffer.from(result.data, 'base64'), mimeType: 'image/jpeg' })

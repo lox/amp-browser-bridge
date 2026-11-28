@@ -1,6 +1,6 @@
-// Runs each test/e2e/*.e2e.ts against the real extension in a headed Chrome and a real bridge
-// (plugin/host.ts), each on a fresh bridge home and Chrome profile with Developer mode on. On Linux
-// without a display it starts Xvfb. CHROME_BIN must be Chrome for Testing or Chromium (branded
+// Runs each test/e2e/*.e2e.ts against the real extension in a headed Chrome and a real blind
+// reflector (relay/server.ts), each on a fresh home and Chrome profile with Developer mode on. On
+// Linux without a display it starts Xvfb. CHROME_BIN must be Chrome for Testing or Chromium (branded
 // Chrome ignores --load-extension); it defaults to agent-browser's newest Chrome for Testing.
 // Usage: bun run e2e [name ...]. E2E_SHOTS=<dir> saves screenshots of the whole screen there.
 import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, readdirSync } from 'node:fs'
@@ -56,19 +56,25 @@ for (const script of scripts) {
   // Developer mode, as after "Load unpacked"; without it Reload turns a command-line extension off.
   mkdirSync(join(profile, 'Default'))
   writeFileSync(join(profile, 'Default/Preferences'), JSON.stringify({ extensions: { ui: { developer_mode: true } } }))
-  const host = Bun.spawn(['bun', 'plugin/host.ts'], { cwd: root, env: { ...process.env, HOME: home }, stdout: 'ignore', stderr: 'inherit' })
+  const relay = Bun.spawn(['bun', 'relay/server.ts'], { cwd: root, env: { ...process.env, HOME: home }, stdout: 'ignore', stderr: 'inherit' })
   let browser: ReturnType<typeof Bun.spawn> | undefined
   console.log(`--- ${script}`)
   try {
-    // Chrome must start after the bridge has written its token and pairing code.
-    await waitFor('the bridge', () => existsSync(join(home, '.amp-browser-bridge/pairing-code')))
+    await waitFor('the reflector', async () => (await fetch('http://127.0.0.1:19989/healthz')).ok)
     const ext = join(root, 'extension')
     browser = Bun.spawn([chrome, '--no-sandbox', '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-dev-shm-usage',
       '--window-position=0,0', '--window-size=1440,900', '--remote-debugging-port=9333', `--user-data-dir=${profile}`,
       `--disable-extensions-except=${ext}`, `--load-extension=${ext}`, '--enable-unsafe-extension-debugging', `http://127.0.0.1:${page.port}/`],
       { env: { ...process.env }, stdout: 'ignore', stderr: 'ignore' })
     await waitFor('Chrome', async () => (await fetch('http://127.0.0.1:9333/json/version')).ok)
-    const run = Bun.spawn(['bun', join(import.meta.dir, script)], { cwd: root, env: { ...process.env, E2E_HOME: home, ...(shots ? { E2E_SHOTS: shots } : {}) }, stdout: 'inherit', stderr: 'inherit' })
+    // Clean env: never pass real BROWSER_BRIDGE_* secrets into e2e scripts.
+    const childEnv: Record<string, string | undefined> = { ...process.env, HOME: home, E2E_HOME: home, ...(shots ? { E2E_SHOTS: shots } : {}) }
+    delete childEnv.BROWSER_BRIDGE_KEY
+    delete childEnv.BROWSER_BRIDGE_RELAY
+    delete childEnv.BROWSER_BRIDGE_URL
+    delete childEnv.BROWSER_BRIDGE_TOKEN
+    delete childEnv.AMP_BROWSER_BRIDGE_ROLE
+    const run = Bun.spawn(['bun', join(import.meta.dir, script)], { cwd: root, env: childEnv, stdout: 'inherit', stderr: 'inherit' })
     const timer = setTimeout(() => run.kill(), 240_000)
     const code = await run.exited
     clearTimeout(timer)
@@ -81,8 +87,8 @@ for (const script of scripts) {
     console.log(`FAIL ${script}: ${(e as Error).message}`)
   } finally {
     browser?.kill()
-    host.kill()
-    await Promise.all([browser?.exited, host.exited])
+    relay.kill()
+    await Promise.all([browser?.exited, relay.exited])
     rmSync(home, { recursive: true, force: true })
     rmSync(profile, { recursive: true, force: true })
   }

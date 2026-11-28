@@ -1,20 +1,27 @@
-// Lends one tab to Amp through the bridge on this computer (plugin/host.ts), which listens only on
-// loopback, and, if the user allows it, lets Amp threads open background tabs of their own.
+// Lends one tab to Amp through a blind end-to-end encrypted reflector (relay/server.ts), and, if
+// the user allows it, lets Amp threads open background tabs of their own. Chrome generates a
+// 256-bit root key on install and a fresh non-extractable P-256 ECDH keypair on every WebSocket
+// connection, so the reflector sees only ciphertext and past sessions have forward secrecy.
 // Everything that must survive a service worker restart lives in chrome.storage.session: the lent
 // tab and its permissions, each tab's latest snapshot refs, a waiting handoff and the lease. Amp's
 // own tabs are recorded in chrome.storage.local, so they stay Amp's across a reload of the extension.
 import {PROBE_SELECTORS, classifyChallenge, probePage} from "./challenge.js";
+import "./crypto.js";
 
-const BRIDGE = "ws://127.0.0.1:19989/ext";
 const SNAPSHOT_LIMIT = 120_000;
 const MUTATING = new Set(["click", "type", "fill", "press", "select", "navigate"]);
 // A <select> is a combobox too, but it holds options, not typed text; text comboboxes are editable.
 const EDITABLE = new Set(["textbox", "searchbox", "spinbutton"]);
 const WAIT_LIMIT_MS = 20_000;
+/** A thread that hasn't used the lent tab for this long loses it to the next thread that asks. */
+const LEASE_IDLE_MS = 10 * 60_000;
 /** Amp's own tabs close after this long without a command. */
 const AGENT_TAB_IDLE_MS = 10 * 60_000;
+const COMMAND_TIMEOUT_MS = 60_000;
+const LONG_POLL_MAX_MS = 25_000;
+const HANDOFF_HISTORY_TTL_MS = 10 * 60_000;
 // A navigation waits this long for the page to load, then this long for a bot check that clears by
-// itself, which keeps the whole command well inside the bridge's and the portal's timeouts.
+// itself, which keeps the whole command well inside the reflector's timeouts.
 const LOAD_WAIT_MS = 10_000;
 const CHALLENGE_WAIT_MS = 12_000;
 
@@ -22,22 +29,62 @@ let socket = null;
 let ready = false;
 let heartbeat = null;
 let reconnectTimer = null;
+let connectSeq = 0;
 let lastError = "";
+let everUsed = false;
 /** Commands running per tab, for the RUN badge and so an idle sweep never closes a busy tab. */
 const running = new Map();
-// A pairing code is kept until the bridge accepts or rejects it, so a bridge that is still starting
-// doesn't lose it. pairError says why the last code failed.
-let pendingCode = "";
-let pairError = "";
-// What the bridge last said about being published to orbs: undefined until it says (older bridges
-// never do), null for not published, or {url, thread, at}.
-let published;
+/** In-memory waiters for active long-polls (`GET /handoff/:id?wait=…`). */
+const handoffWaiters = new Map();
 
 const session = {
   get: async (key) => (await chrome.storage.session.get(key))[key] ?? null,
   set: (key, value) => chrome.storage.session.set({[key]: value}),
   remove: (key) => chrome.storage.session.remove(key),
 };
+
+let stateLock = Promise.resolve();
+function withStateLock(fn) {
+  const next = stateLock.then(fn);
+  stateLock = next.catch(() => {});
+  return next;
+}
+
+let configLock = Promise.resolve();
+function withConfigLock(fn) {
+  const next = configLock.then(fn);
+  configLock = next.catch(() => {});
+  return next;
+}
+
+function ensureConfig() {
+  return withConfigLock(async () => {
+    const stored = await chrome.storage.local.get(["bridgeKey", "relay", "everUsed", "key"]);
+    let bridgeKey = stored.bridgeKey;
+    let used = !!stored.everUsed;
+    if (!bridgeKey || bridgeKey.version !== 3 || typeof bridgeKey.secret !== "string") {
+      bridgeKey = {version: 3, secret: BridgeCrypto.generateSecret()};
+      used = false;
+      await chrome.storage.local.set({bridgeKey, everUsed: false});
+      if (stored.key) {
+        await chrome.storage.local.remove("key");
+        await focusOrOpenSetup();
+      }
+    } else if (stored.key) {
+      await chrome.storage.local.remove("key");
+    }
+    everUsed = used;
+    const relay = stored.relay || BridgeCrypto.DEFAULT_RELAY;
+    return {secret: bridgeKey.secret, relay, everUsed: used};
+  });
+}
+
+async function focusOrOpenSetup() {
+  const url = chrome.runtime.getURL("setup.html");
+  const [tab] = await chrome.tabs.query({url});
+  if (tab) await chrome.tabs.update(tab.id, {active: true}).catch(() => {});
+  else await chrome.tabs.create({url}).catch(() => {});
+}
 
 /** {tabId, origin, allowActions, anyOrigin} */
 const getLend = () => session.get("lend");
@@ -88,10 +135,6 @@ async function agentTabsInfo() {
   return {enabled: await agentTabsAllowed(), tabs};
 }
 
-async function sendAgentTabs() {
-  send({type: "agent_tabs", ...(await agentTabsInfo())});
-}
-
 async function badge() {
   const [lend, handoff, agentTabs] = await Promise.all([getLend(), session.get("handoff"), getAgentTabs()]);
   // Per tab: the badge shows only while you look at a tab Amp uses, so ON never marks the wrong one.
@@ -111,174 +154,263 @@ async function badge() {
   if (away) await chrome.action.setBadgeBackgroundColor({color: "#ea580c"});
 }
 
-function send(message) {
-  // Before the bridge accepts hello, any other message would get this browser rejected.
-  if (!ready || socket?.readyState !== WebSocket.OPEN) return false;
-  socket.send(JSON.stringify(message));
+function rawSend(ws, message) {
+  if (ws.readyState !== WebSocket.OPEN) return false;
+  ws.send(JSON.stringify(message));
   return true;
 }
 
-// Defines globalThis.BridgePairing. Imports are hoisted, so this placement only keeps it next to
-// its one user; pairing.js has no exports, so it also loads as a classic script (the tests do).
-import "./pairing.js";
+async function activeLease(now = Date.now()) {
+  const lease = await session.get("lease");
+  if (!lease || now - lease.lastUsed >= LEASE_IDLE_MS) return null;
+  return {
+    thread: lease.thread,
+    since: new Date(lease.since).toISOString(),
+    idle_seconds: Math.round((now - lease.lastUsed) / 1000),
+  };
+}
 
-async function connect(code) {
+function acquireLease(thread) {
+  return withStateLock(async () => {
+    const now = Date.now();
+    const lease = await session.get("lease");
+    if (lease && lease.thread !== thread && now - lease.lastUsed < LEASE_IDLE_MS) {
+      return `The lent tab is in use by thread ${lease.thread}. Ask the user to release it from the extension popup, or wait until it has been idle for ${LEASE_IDLE_MS / 60_000} minutes.`;
+    }
+    const next = lease?.thread === thread ? {...lease, lastUsed: now} : {thread, since: now, lastUsed: now};
+    await session.set("lease", next);
+    return null;
+  });
+}
+
+async function handoffStatus(thread) {
+  if (!thread) return null;
+  const [active, latestMap] = await Promise.all([session.get("handoff"), session.get("latestHandoff")]);
+  if (active?.thread === thread) {
+    return {state: "waiting", message: active.message, started: new Date(active.started).toISOString()};
+  }
+  const h = latestMap?.[thread];
+  if (!h) return null;
+  const state = !h.outcome ? "waiting" : h.outcome.result?.continued ? "continued" : "ended";
+  return {
+    state,
+    message: h.message,
+    started: new Date(h.started).toISOString(),
+    ...(h.ended ? {ended: new Date(h.ended).toISOString()} : {}),
+    ...(h.outcome?.error ? {error: h.outcome.error} : {}),
+  };
+}
+
+async function bridgeStatus(thread = "") {
+  const info = await agentTabsInfo();
+  return {
+    handoff: await handoffStatus(thread),
+    extension_connected: true,
+    tab: await tabInfo(),
+    // A thread sees only the tabs it opened, and whether it may open more.
+    agent_tabs: {
+      enabled: info.enabled,
+      tabs: info.tabs.filter((t) => t.thread === thread).map(({thread: _, ...t}) => t),
+    },
+    lease: await activeLease(),
+  };
+}
+
+const jsonResponse = (status, data) => ({status, body: JSON.stringify(data)});
+
+async function routeRequest(req) {
+  const url = new URL(req.path, "http://bridge.local");
+  if (url.pathname === "/status" && req.method === "GET") {
+    return jsonResponse(200, await bridgeStatus(req.thread));
+  }
+
+  const handoffRoute = url.pathname.match(/^\/handoff\/([0-9a-f]{16})(\/cancel)?$/);
+  if (!(url.pathname === "/call" && req.method === "POST") && !handoffRoute) {
+    return jsonResponse(404, {error: "Not found."});
+  }
+  if (!/^T-[0-9a-f-]{36}$/.test(req.thread)) {
+    return jsonResponse(400, {error: "Missing or invalid x-amp-thread header."});
+  }
+
+  if (url.pathname === "/call") {
+    let call = null;
+    try {
+      call = JSON.parse(req.body);
+    } catch {}
+    if (!call || typeof call.tool !== "string") return jsonResponse(400, {error: "Expected {tool, args}."});
+    const args = call.args ?? {};
+    if (args.tab != null && !Number.isInteger(args.tab)) {
+      return jsonResponse(400, {error: "tab must be a tab id from browser_open_tab."});
+    }
+    if (call.tool !== "open_tab" && args.tab == null) {
+      const denied = await acquireLease(req.thread);
+      if (denied) return jsonResponse(409, {error: denied});
+    }
+    if (call.tool === "handoff") {
+      const message = typeof args.message === "string" ? args.message.slice(0, 500) : "Your turn";
+      return jsonResponse(200, await beginHandoff(req.thread, message, args.tab));
+    }
+    return jsonResponse(200, await runCommandWithTimeout(req.thread, call.tool, args));
+  }
+
+  const [, id, cancel] = handoffRoute;
+  const [active, history] = await Promise.all([session.get("handoff"), session.get("handoffHistory")]);
+  const rec = active?.id === id ? active : history?.[id];
+  if (rec?.tab == null) {
+    const denied = await acquireLease(req.thread);
+    if (denied) return jsonResponse(409, {error: denied});
+    if (rec && rec.thread !== req.thread) return jsonResponse(409, {error: "This handoff belongs to another thread."});
+  } else if (rec.thread !== req.thread) {
+    return jsonResponse(409, {error: "This handoff belongs to another thread."});
+  }
+
+  if (cancel && req.method === "POST") {
+    await finishHandoff(id, {error: "The handoff was cancelled."});
+    return jsonResponse(200, {result: {cancelled: true}});
+  }
+  if (!cancel && req.method === "GET") {
+    return jsonResponse(200, await waitHandoff(id, Number(url.searchParams.get("wait") ?? 0)));
+  }
+  return jsonResponse(404, {error: "Not found."});
+}
+
+async function connect() {
+  const seq = ++connectSeq;
   clearTimeout(reconnectTimer);
-  // {version: 2, secret}: the browser key from the handshake in pairing.js. Never sent anywhere.
-  const stored = (await chrome.storage.local.get("key")).key;
-  if (typeof stored === "string") {
-    // Earlier versions sent their key in plain text on every connection, to whatever held the port.
-    await chrome.storage.local.remove("key");
-    pairError = "The extension was updated and now pairs in a safer way, so this browser needs to pair once more.";
-    chrome.tabs.create({url: chrome.runtime.getURL("setup.html")});
-  }
-  const key = stored?.version === 2 ? stored.secret : "";
-  if (code) {
-    pendingCode = code;
-    pairError = "";
-  }
-  code = pendingCode || undefined;
-  if (!key && !code) return;
-  // A code takes precedence: the user asked to pair. The proofs are bound to the port dialled.
-  // Awaited before the old socket is replaced, so overlapping calls never leave one open.
-  const port = Number(new URL(BRIDGE).port);
-  const nonce = BridgePairing.nonce();
-  const exchange = code ? await BridgePairing.codeExchange(code) : null;
+  const cfg = await ensureConfig();
+  if (seq !== connectSeq) return;
+
+  const root = await BridgeCrypto.deriveRoot(cfg.secret);
+  const netSession = await BridgeCrypto.createSession(root);
+  if (seq !== connectSeq) return;
+
   if (socket) {
     socket.onclose = null;
     socket.close();
   }
   ready = false;
-  published = undefined;
-  const ws = new WebSocket(BRIDGE);
+  clearInterval(heartbeat);
+
+  let ws;
+  try {
+    ws = new WebSocket(BridgeCrypto.wsURL(cfg.relay));
+  } catch (error) {
+    lastError = String(error?.message || error);
+    return;
+  }
   socket = ws;
-  // Anything can listen on the port, so nothing it sends is obeyed until it has proved it holds this
-  // browser's key or knows the code. `phase` is what may come next; "busy" while a step is checked.
-  let phase = "challenge";
-  let bridgeNonce = "";
-  let sessionKey = null;
-  let distrusted = "";
-  const IMPOSTOR = "Something on 127.0.0.1:19989 could not prove it is your bridge, so this browser won't talk to it. Quit whatever holds the port, then restart Amp.";
-  const refuse = (why) => {
-    distrusted = why;
-    ws.close();
+
+  const regTimer = setTimeout(() => {
+    if (!ready && socket === ws) ws.close();
+  }, 10_000);
+
+  ws.onopen = () => {
+    rawSend(ws, {type: "register", gate: netSession.gate, banner: netSession.banner});
   };
-  const handshakeTimer = setTimeout(() => phase !== "ready" && refuse(IMPOSTOR), 10_000);
-  const authenticate = async (browserKey) => {
-    const proof = await BridgePairing.keyProof(browserKey, "extension", port, nonce, bridgeNonce);
-    phase = "ready-wait";
-    // The lent tab is told only to a bridge that has proved itself.
-    ws.send(JSON.stringify({type: "auth", proof, tab: await tabInfo(), agent_tabs: await agentTabsInfo(), handoff: (await session.get("handoff"))?.id}));
-  };
-  const handshake = async (message) => {
-    const step = phase;
-    phase = "busy";
-    if (step === "challenge" && message.type === "challenge" && typeof message.nonce === "string") {
-      bridgeNonce = message.nonce;
-      if (!exchange) {
-        if (!BridgePairing.same(await BridgePairing.keyProof(key, "bridge", port, nonce, bridgeNonce), message.proof)) return refuse(IMPOSTOR);
-        return authenticate(key);
-      }
-      sessionKey = await exchange.session(port, nonce, bridgeNonce, message.ecdh);
-      if (!sessionKey) return refuse(IMPOSTOR);
-      const proof = await BridgePairing.codeProof(sessionKey, "extension");
-      phase = "paired";
-      return ws.send(JSON.stringify({type: "pair", proof}));
-    }
-    if (step === "paired" && message.type === "paired") {
-      if (!BridgePairing.same(await BridgePairing.codeProof(sessionKey, "bridge"), message.proof)) return refuse(IMPOSTOR);
-      const secret = await BridgePairing.unwrapKey(sessionKey, message.wrapped);
-      if (!secret) return refuse(IMPOSTOR);
-      await chrome.storage.local.set({key: {version: 2, secret}});
-      return authenticate(secret);
-    }
-    if (step === "ready-wait" && message.type === "ready") {
-      phase = "ready";
-      clearTimeout(handshakeTimer);
-      ready = true;
-      lastError = "";
-      pendingCode = "";
-      clearInterval(heartbeat);
-      heartbeat = setInterval(() => send({type: "ping"}), 20_000);
-      // A Continue click made while the bridge was unreachable is delivered now.
-      if ((await session.get("handoff"))?.continued) await continueHandoff();
+
+  ws.onmessage = async (event) => {
+    let msg;
+    try {
+      msg = JSON.parse(event.data);
+    } catch {
+      ws.close();
       return;
     }
-    refuse(IMPOSTOR);
-  };
-  ws.onopen = () => ws.send(JSON.stringify({type: "hello", nonce, ...(exchange ? {ecdh: exchange.publicKey} : {})}));
-  ws.onmessage = async (event) => {
-    let message;
-    try {
-      message = JSON.parse(event.data);
-    } catch {
-      return refuse(IMPOSTOR);
+    if (!ready) {
+      if (msg?.type === "registered") {
+        clearTimeout(regTimer);
+        ready = true;
+        lastError = "";
+        clearInterval(heartbeat);
+        heartbeat = setInterval(() => rawSend(ws, {type: "ping"}), 20_000);
+      } else {
+        ws.close();
+      }
+      return;
     }
-    if (phase !== "ready") return handshake(message);
-    if (message.type === "published") published = message.published ?? null;
-    if (message.type === "lease") await session.set("lease", message.lease);
-    if (message.type === "command") run(message);
-    if (message.type === "handoff") await startHandoff(message.id, message.message, message.thread, message.tab);
-    if (message.type === "cancel_handoff") await clearHandoff(message.id);
+    if (msg?.type === "pong") return;
+    if (msg?.type === "req" && typeof msg.relay_id === "string") {
+      const opened = await netSession.openRequest(msg);
+      if (!opened) {
+        rawSend(ws, {type: "res", relay_id: msg.relay_id, error: "unauthorized"});
+        return;
+      }
+      if (!everUsed) {
+        everUsed = true;
+        chrome.storage.local.set({everUsed: true});
+      }
+      let res;
+      try {
+        res = await routeRequest(opened.request);
+      } catch (error) {
+        res = jsonResponse(500, {error: String(error?.message || error)});
+      }
+      const ct = await opened.sealResponse(res.status, res.body);
+      rawSend(ws, {type: "res", relay_id: msg.relay_id, ct});
+    }
   };
+
   ws.onclose = (event) => {
-    clearTimeout(handshakeTimer);
+    clearTimeout(regTimer);
     if (socket !== ws) return;
     socket = null;
     ready = false;
     clearInterval(heartbeat);
-    if (distrusted) {
-      // The code may have reached an impostor; ask for a new one rather than trying it again.
-      if (code) {
-        pendingCode = "";
-        pairError = distrusted;
-      }
-      lastError = distrusted;
-      reconnectTimer = setTimeout(() => connect(), 10_000);
+    if (event.code === 4001) {
+      lastError = "Another browser connected with this setup key. Click Reconnect to take over, or Rotate key.";
       return;
     }
     if (event.code === 1008) {
-      pairError = code
-        ? "The bridge rejected this pairing code. Codes work once, for 10 minutes, and five wrong tries void them."
-        : "The bridge no longer knows this browser. Pair it again. If you just updated the extension, update the Amp plugin on your Mac too.";
-      pendingCode = "";
-      lastError = "The bridge rejected this browser. Pair it again.";
-      chrome.storage.local.remove("key");
+      lastError = `The reflector rejected registration (${event.reason || "invalid handshake"}).`;
+      reconnectTimer = setTimeout(() => connect(), 10_000);
       return;
     }
-    if (event.code === 4001) {
-      lastError = "Another browser connected to the bridge. Click Reconnect to take over.";
-      return;
-    }
-    lastError = "The bridge isn't reachable on 127.0.0.1:19989; retrying.";
+    lastError = `Cannot reach reflector at ${cfg.relay}; retrying.`;
     reconnectTimer = setTimeout(() => connect(), 3000);
   };
 }
 
-async function run(message) {
-  const args = message.args || {};
+function runCommandWithTimeout(thread, tool, args) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      resolve({error: `The extension did not answer within ${COMMAND_TIMEOUT_MS / 1000}s; the outcome is unknown.`, unknown: true});
+    }, COMMAND_TIMEOUT_MS);
+    runCommand(thread, tool, args).then(
+      (outcome) => {
+        clearTimeout(timer);
+        resolve(outcome);
+      },
+      (error) => {
+        clearTimeout(timer);
+        resolve({error: String(error?.message || error), unknown: true});
+      },
+    );
+  });
+}
+
+async function runCommand(thread, tool, rawArgs) {
+  const args = rawArgs || {};
   // Set once input may have reached the page: a failure after that leaves the outcome unknown.
   const effects = {sent: false};
   let tabId = null;
   try {
-    if (message.tool === "open_tab") {
-      send({type: "result", id: message.id, result: await openTab(message.thread, args.url, effects)});
-      return;
+    if (tool === "open_tab") {
+      return {result: await openTab(thread, args.url, effects)};
     }
-    const policy = await policyFor(message.thread, args.tab, true);
+    const policy = await policyFor(thread, args.tab, true);
     tabId = policy.tabId;
     // A reload of the extension detaches the debugger; attach again on first use. Closing needs
     // no debugger, so it works on a tab Chrome won't let it attach to, such as the Web Store.
-    if (message.tool !== "close_tab") {
+    if (tool !== "close_tab") {
       if (policy.agent) await attach(tabId);
       await thaw(tabId);
     }
     await badge();
-    if (message.tool === "close_tab" && (await session.get("handoff"))?.tabId === tabId) throw new Error("The user has the tab for a handoff. Wait for browser_handoff to return.");
-    const result = message.tool === "close_tab" && policy.agent
+    if (tool === "close_tab" && (await session.get("handoff"))?.tabId === tabId) throw new Error("The user has the tab for a handoff. Wait for browser_handoff to return.");
+    const result = tool === "close_tab" && policy.agent
       ? await closeAgentTab(tabId)
-      : await execute(policy, message.tool, args, effects);
-    send({type: "result", id: message.id, result});
+      : await execute(policy, tool, args, effects);
+    return {result};
   } catch (error) {
     // Chrome refuses, or detaches from, a tab once it reaches the Web Store (by a redirect, or the
     // user went there). Whatever failed, the tab is there: say so. A navigation's outcome is then
@@ -288,10 +420,9 @@ async function run(message) {
     // No URL in the message: a lent tab that left its site keeps where it went to itself.
     const url = tabId != null && (await chrome.tabs.get(tabId).catch(() => null))?.url;
     if (url && isWebStore(new URL(url))) {
-      send({type: "result", id: message.id, error: `The tab is on the Chrome Web Store. ${WEB_STORE}`, unknown: message.tool !== "navigate" && effects.sent});
-      return;
+      return {error: `The tab is on the Chrome Web Store. ${WEB_STORE}`, unknown: tool !== "navigate" && effects.sent};
     }
-    send({type: "result", id: message.id, error: String(error?.message || error).slice(0, 1000), unknown: effects.sent});
+    return {error: String(error?.message || error).slice(0, 1000), unknown: effects.sent};
   } finally {
     if (tabId != null) {
       // A tab the user closed, or turned Amp's tabs off for, while this ran closes now.
@@ -859,7 +990,7 @@ function showCard(message) {
 
 async function injectCard() {
   const handoff = await session.get("handoff");
-  if (!handoff || handoff.continued) return;
+  if (!handoff) return;
   await thaw(handoff.tabId).catch(() => {});
   await chrome.scripting.executeScript({target: {tabId: handoff.tabId}, world: "ISOLATED", func: showCard, args: [handoff.message]}).catch(() => {});
 }
@@ -868,28 +999,93 @@ async function removeCard(tabId) {
   await chrome.scripting.executeScript({target: {tabId}, world: "ISOLATED", func: () => document.getElementById("__amp_handoff")?.remove()}).catch(() => {});
 }
 
+const randomHex8 = () => Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, "0")).join("");
+
 /** Shows the card on the lent tab, or on one of the thread's own tabs, and opens its group so the user finds it. */
-async function startHandoff(id, message, thread, tab) {
-  let tabId;
-  try {
-    tabId = (await policyFor(thread, tab)).tabId;
-  } catch (error) {
-    send({type: "result", id, error: `Nowhere to show the handoff: ${error.message}`});
-    return;
-  }
-  await session.set("handoff", {id, message, tabId});
-  const groupId = (await chrome.tabs.get(tabId).catch(() => null))?.groupId;
-  if (groupId >= 0) await chrome.tabGroups.update(groupId, {collapsed: false}).catch(() => {});
-  await injectCard();
-  await badge();
+function beginHandoff(thread, message, tab) {
+  return withStateLock(async () => {
+    const active = await session.get("handoff");
+    if (active) {
+      if (active.thread === thread) return {result: {handoff_id: active.id, resumed: true, message: active.message}};
+      return {error: "A handoff is already waiting for the user."};
+    }
+    let tabId;
+    try {
+      tabId = (await policyFor(thread, tab)).tabId;
+    } catch (error) {
+      return {error: `Nowhere to show the handoff: ${error.message}`};
+    }
+    if (running.get(tabId) > 0) return {error: "Wait for the running browser command to finish before handing off."};
+    const id = randomHex8();
+    const started = Date.now();
+    const record = {id, thread, tab: tab ?? null, tabId, message, started};
+    const latest = (await session.get("latestHandoff")) || {};
+    latest[thread] = {id, message, started};
+    await session.set("handoff", record);
+    await session.set("latestHandoff", latest);
+    chrome.alarms.create(`handoff-timeout:${id}`, {delayInMinutes: 30});
+    const groupId = (await chrome.tabs.get(tabId).catch(() => null))?.groupId;
+    if (groupId >= 0) await chrome.tabGroups.update(groupId, {collapsed: false}).catch(() => {});
+    await injectCard();
+    await badge();
+    return {result: {handoff_id: id}};
+  });
 }
 
-async function clearHandoff(id) {
-  const handoff = await session.get("handoff");
-  if (!handoff || (id && handoff.id !== id)) return;
-  await session.remove("handoff");
-  await removeCard(handoff.tabId);
-  await badge();
+function finishHandoff(id, outcome) {
+  return withStateLock(async () => {
+    const active = await session.get("handoff");
+    if (!active || (id && active.id !== id)) return;
+    const ended = Date.now();
+    await session.remove("handoff");
+    const history = (await session.get("handoffHistory")) || {};
+    for (const [oldId, h] of Object.entries(history)) {
+      if (ended - (h.ended || 0) > HANDOFF_HISTORY_TTL_MS) delete history[oldId];
+    }
+    history[active.id] = {id: active.id, thread: active.thread, tab: active.tab, ended, outcome};
+    const latest = (await session.get("latestHandoff")) || {};
+    latest[active.thread] = {id: active.id, message: active.message, started: active.started, ended, outcome};
+    await session.set("handoffHistory", history);
+    await session.set("latestHandoff", latest);
+    await chrome.alarms.clear(`handoff-timeout:${active.id}`).catch(() => {});
+    await removeCard(active.tabId);
+    await badge();
+    const waiters = handoffWaiters.get(active.id);
+    if (waiters) {
+      handoffWaiters.delete(active.id);
+      for (const w of waiters) w(outcome);
+    }
+  });
+}
+
+async function waitHandoff(id, waitMs) {
+  const [active, history] = await Promise.all([session.get("handoff"), session.get("handoffHistory")]);
+  if (history?.[id]?.outcome) return history[id].outcome;
+  if (active?.id !== id) return {error: "Unknown handoff."};
+  const limit = Math.min(Math.max(waitMs || 0, 0), LONG_POLL_MAX_MS);
+  if (limit === 0) return {result: {waiting: true}};
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (outcome) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      handoffWaiters.get(id)?.delete(done);
+      resolve(outcome);
+    };
+    const timer = setTimeout(() => done({result: {waiting: true}}), limit);
+    let set = handoffWaiters.get(id);
+    if (!set) {
+      set = new Set();
+      handoffWaiters.set(id, set);
+    }
+    set.add(done);
+    // Re-check after registering so a Continue click during the read above cannot slip past.
+    session.get("handoffHistory").then((h) => {
+      if (h?.[id]?.outcome) done(h[id].outcome);
+    });
+  });
 }
 
 async function continueHandoff() {
@@ -899,13 +1095,11 @@ async function continueHandoff() {
   await updateAgentTabs((tabs) => {
     if (tabs[handoff.tabId]) tabs[handoff.tabId].lastUsed = Date.now();
   });
-  await removeCard(handoff.tabId);
-  // Keep the answer until the bridge has it; it's sent again once the connection is back.
-  if (!send({type: "result", id: handoff.id, result: {continued: true, tab: await tabInfo()}})) {
-    await session.set("handoff", {...handoff, continued: true});
-    return;
+  if (handoff.tab == null) {
+    const lease = await session.get("lease");
+    if (lease?.thread === handoff.thread) await session.set("lease", {...lease, lastUsed: Date.now()});
   }
-  await clearHandoff(handoff.id);
+  await finishHandoff(handoff.id, {result: {continued: true, tab: await tabInfo()}});
 }
 
 // ---- Lending ----
@@ -936,8 +1130,6 @@ async function lend(tabId) {
   });
   await groupTab(tabId);
   await session.remove(`refs:${tabId}`);
-  send({type: "tab", tab: await tabInfo()});
-  await sendAgentTabs();
   await badge();
 }
 
@@ -966,7 +1158,6 @@ async function setPermissions(changes) {
   const current = await getLend();
   if (!current) return;
   await session.set("lend", {...current, ...changes});
-  send({type: "tab", tab: await tabInfo()});
 }
 
 // The lent tab sits in a green "Amp" tab group, so it's easy to spot from any tab in the window.
@@ -1006,11 +1197,10 @@ async function stop() {
   const current = await getLend();
   const handoff = await session.get("handoff");
   if (handoff && handoff.tabId === current?.tabId) {
-    send({type: "result", id: handoff.id, error: "The user stopped lending the tab."});
-    await removeCard(handoff.tabId);
-    await session.remove("handoff");
+    await finishHandoff(handoff.id, {error: "The user stopped lending the tab."});
   }
   await session.remove("lend");
+  await session.remove("lease");
   if (current) {
     await session.remove(`refs:${current.tabId}`);
     await chrome.action.setBadgeText({tabId: current.tabId, text: null}).catch(() => {});
@@ -1018,7 +1208,6 @@ async function stop() {
     await chrome.storage.local.remove("ampGroup");
     await chrome.debugger.detach({tabId: current.tabId}).catch(() => {});
   }
-  send({type: "tab", tab: null});
   await badge();
 }
 
@@ -1071,7 +1260,6 @@ async function openTab(thread, raw, effects) {
     // A redirect into the Web Store, after the debugger attached to the page before it.
     if (now.url && isWebStore(new URL(now.url))) throw new Error("The tab reached the Web Store.");
     await thaw(tab.id);
-    await sendAgentTabs();
     await badge();
     return withChallenge({tabId: tab.id, anyOrigin: true}, {tab: tab.id, url: now.url || url.toString(), title: now.title || ""}, CHALLENGE_WAIT_MS);
   } catch (error) {
@@ -1095,14 +1283,11 @@ async function forgetAgentTab(tabId) {
   await session.remove(`refs:${tabId}`);
   const handoff = await session.get("handoff");
   if (handoff?.tabId === tabId) {
-    send({type: "result", id: handoff.id, error: "The tab was closed or taken back by the user."});
-    await session.remove("handoff");
-    await removeCard(tabId);
+    await finishHandoff(handoff.id, {error: "The tab was closed or taken back by the user."});
   }
   if (tabId !== (await getLend())?.tabId) await chrome.debugger.detach({tabId}).catch(() => {});
   // null, not "": a per-tab "" would hide the WAIT every tab shows during a background handoff.
   await chrome.action.setBadgeText({tabId, text: null}).catch(() => {});
-  await sendAgentTabs();
   await badge();
 }
 
@@ -1135,7 +1320,6 @@ async function setAgentTabsAllowed(enabled) {
   await chrome.storage.local.set({allowAgentTabs: enabled});
   // Turning it off closes Amp's tabs, so nothing it opened keeps running in the background.
   if (!enabled) await closeAllAgentTabs();
-  await sendAgentTabs();
 }
 
 /** The popup's Show button: the user asks to see one of Amp's tabs. */
@@ -1162,10 +1346,40 @@ async function closeIdleAgentTabs() {
   }
 }
 
+async function rotateKey() {
+  await withConfigLock(async () => {
+    const secret = BridgeCrypto.generateSecret();
+    everUsed = false;
+    await chrome.storage.local.set({bridgeKey: {version: 3, secret}, everUsed: false});
+  });
+  await session.remove("lease");
+  lastError = "";
+  await connect();
+}
+
+async function setRelay(raw) {
+  const trimmed = String(raw || "").trim();
+  const relay = trimmed ? BridgeCrypto.normalizeRelay(trimmed) : BridgeCrypto.DEFAULT_RELAY;
+  await withConfigLock(async () => {
+    if (relay === BridgeCrypto.DEFAULT_RELAY) await chrome.storage.local.remove("relay");
+    else await chrome.storage.local.set({relay});
+  });
+  lastError = "";
+  await connect();
+}
+
 // Creating an alarm again restarts its timer, and the worker starts often; create it once.
 chrome.alarms.get("close-idle-agent-tabs").then((alarm) => alarm || chrome.alarms.create("close-idle-agent-tabs", {periodInMinutes: 1}));
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "close-idle-agent-tabs") closeIdleAgentTabs();
+  if (alarm.name === "close-idle-agent-tabs") {
+    closeIdleAgentTabs();
+    if (!socket && !lastError.startsWith("Another browser")) connect();
+  } else if (alarm.name.startsWith("handoff-timeout:")) {
+    finishHandoff(alarm.name.slice("handoff-timeout:".length), {error: "The user did not click Continue within 30 minutes."});
+  }
+});
+self.addEventListener("online", () => {
+  if (!socket && !lastError.startsWith("Another browser")) connect();
 });
 // Tab IDs start over when Chrome restarts, so a recorded ID could now be one of your tabs.
 chrome.runtime.onStartup.addListener(() => chrome.storage.local.remove("agentTabs"));
@@ -1192,9 +1406,6 @@ chrome.tabs.onUpdated.addListener(async (tabId, change) => {
     const record = (await getAgentTabs())[tabId];
     if (record) await ownedTab(tabId, record);
   }
-  if (!change.url && !change.title) return;
-  if (tabId === (await getLend())?.tabId) send({type: "tab", tab: await tabInfo()});
-  else if ((await getAgentTabs())[tabId]) await sendAgentTabs();
 });
 
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
@@ -1202,58 +1413,64 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     if (message.action === "continue") {
       // From the card on the tab that shows it, or the popup's Continue button.
       if (!sender.tab || sender.tab.id === (await session.get("handoff"))?.tabId) await continueHandoff();
-      return;
+      return {};
     }
     // Everything else comes only from the extension's own pages (the popup and setup.html), never
     // from the card's isolated world on the lent tab.
-    if (sender.tab && !sender.url?.startsWith(chrome.runtime.getURL(""))) return;
-    if (message.action === "pair") return connect(String(message.code || "").trim());
-    if (message.action === "reconnect") return connect();
-    if (message.action === "lend") return lend(message.tabId);
-    if (message.action === "stop") return stop();
-    if (message.action === "permissions") return setPermissions({allowActions: !!message.allowActions, anyOrigin: !!message.anyOrigin});
-    if (message.action === "agentTabs") return setAgentTabsAllowed(!!message.enabled);
-    if (message.action === "closeAgentTab") return closeWhenIdle(message.tabId);
-    if (message.action === "closeAgentTabs") return closeAllAgentTabs();
-    if (message.action === "showTab") return showTab(message.tabId);
-    if (message.action === "release") {
-      send({type: "release"});
-      await session.remove("lease");
+    if (sender.tab && !sender.url?.startsWith(chrome.runtime.getURL(""))) return {};
+    if (message.action === "setupKey") {
+      const cfg = await ensureConfig();
+      return {setupKey: BridgeCrypto.formatKey(cfg.secret, cfg.relay)};
     }
+    if (message.action === "rotateKey") {
+      await rotateKey();
+      return {};
+    }
+    if (message.action === "setRelay") {
+      await setRelay(message.relay);
+      return {};
+    }
+    if (message.action === "reconnect") {
+      lastError = "";
+      await connect();
+      return {};
+    }
+    if (message.action === "lend") await lend(message.tabId);
+    if (message.action === "stop") await stop();
+    if (message.action === "permissions") await setPermissions({allowActions: !!message.allowActions, anyOrigin: !!message.anyOrigin});
+    if (message.action === "agentTabs") await setAgentTabsAllowed(!!message.enabled);
+    if (message.action === "closeAgentTab") await closeWhenIdle(message.tabId);
+    if (message.action === "closeAgentTabs") await closeAllAgentTabs();
+    if (message.action === "showTab") await showTab(message.tabId);
+    if (message.action === "release") await session.remove("lease");
+    return {};
   })().then(
-    async () => reply({ok: true, ...(await state())}),
+    async (extra) => reply({ok: true, ...(await state()), ...(extra || {})}),
     async (error) => reply({ok: false, error: String(error.message || error), ...(await state())}),
   );
   return true;
 });
 
 async function state() {
-  const {key} = await chrome.storage.local.get("key");
-  const [lendState, handoff, lease] = await Promise.all([getLend(), session.get("handoff"), session.get("lease")]);
+  const cfg = await ensureConfig();
+  const [lendState, handoff, lease] = await Promise.all([getLend(), session.get("handoff"), activeLease()]);
   return {
-    paired: !!key, connected: ready, bridge: ready ? "connected" : await probe(), bridgeError: lastError,
-    pairing: !!pendingCode, pairError, published,
-    lend: lendState, tab: await tabInfo(), waiting: handoff?.message ?? null, waitingTab: handoff?.tabId ?? null, lease,
+    connected: ready,
+    relay: cfg.relay,
+    defaultRelay: BridgeCrypto.DEFAULT_RELAY,
+    everUsed: cfg.everUsed,
+    bridgeError: lastError,
+    lend: lendState,
+    tab: await tabInfo(),
+    waiting: handoff?.message ?? null,
+    waitingTab: handoff?.tabId ?? null,
+    lease,
     agentTabs: await agentTabsInfo(),
   };
 }
 
-/** Whether something answers on the bridge's port when the extension isn't connected to it. */
-async function probe() {
-  try {
-    // The ID tells the bridge which build (store or unpacked) to open the setup page in when pairing.
-    const res = await fetch(BRIDGE.replace("ws:", "http:").replace("/ext", "/status"), {
-      headers: {"x-extension-id": chrome.runtime.id}, signal: AbortSignal.timeout(1500),
-    });
-    // The bridge answers 401 "unauthorized" without its token.
-    return res.status === 401 && (await res.text()) === "unauthorized" ? "found" : "other";
-  } catch {
-    return "missing";
-  }
-}
-
 chrome.runtime.onInstalled.addListener(({reason}) => {
-  if (reason === "install") chrome.tabs.create({url: chrome.runtime.getURL("setup.html")});
+  if (reason === "install") focusOrOpenSetup();
 });
 
 /**

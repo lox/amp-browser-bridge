@@ -11,8 +11,9 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createClient, type BridgeClient } from '../plugin/crypto'
 import { UNPACKED_ID } from '../plugin/extension-id'
-import { DEFAULT_PORT, signRequest, startBridge, writePublished } from '../plugin/host'
+import { DEFAULT_PORT, startRelay } from '../relay/server'
 
 const CHROME = process.env.CHROME
 if (!CHROME) throw new Error('Set CHROME to a Chromium or Chrome for Testing binary.')
@@ -21,19 +22,12 @@ const out = join(root, 'docs', 'store')
 const THREAD = 'T-019a3f6e-2b7c-7d41-9c58-4e1f0a6b3d27' // fictional
 const DEMO = 'https://app.example.com'
 
-// ---- The bridge, with a fictional published portal ----
+// ---- Local reflector ----
 
-const dir = mkdtempSync(join(tmpdir(), 'abb-store-'))
-writePublished(dir, { url: 'https://port-19989--k7q2m.onamp.dev', thread: THREAD, at: new Date().toISOString() })
-const bridge = startBridge({ dir, port: DEFAULT_PORT })
-/** A request signed as the plugin signs it. */
-const post = (path: string, body = '') =>
-  fetch(`http://127.0.0.1:${DEFAULT_PORT}${path}`, {
-    method: 'POST',
-    headers: { 'x-bridge-auth': signRequest(bridge.token, { method: 'POST', path, thread: THREAD, body }).header, 'x-amp-thread': THREAD, 'content-type': 'application/json' },
-    body,
-  })
-const call = (tool: string, args: object = {}) => post('/call', JSON.stringify({ tool, args })).then((r) => r.json())
+const relay = startRelay({ port: DEFAULT_PORT })
+let client: BridgeClient
+const post = (path: string, body = '') => client.request(THREAD, path, { method: 'POST', body })
+const call = (tool: string, args: Record<string, unknown> = {}) => client.call(THREAD, tool, args)
 
 // ---- Chrome, driven over the DevTools protocol ----
 
@@ -94,10 +88,10 @@ const setup = await page(setupTarget.targetId, 1160, 572)
 const state = () => setup.evaluate('chrome.runtime.sendMessage({action: "state"})')
 const ask = (message: object) => setup.evaluate(`chrome.runtime.sendMessage(${JSON.stringify(message)})`)
 
-// The setup page's probe has told the bridge which build is installed, before any pairing.
-await until('the bridge to record the extension ID', () => readFileSync(join(dir, 'extension-id'), 'utf8').trim() === UNPACKED_ID)
-await ask({ action: 'pair', code: readFileSync(join(dir, 'pairing-code'), 'utf8').trim() })
+await ask({ action: 'setRelay', relay: `http://127.0.0.1:${DEFAULT_PORT}` })
 await until('the extension to connect', async () => (await state()).connected)
+const { setupKey } = await ask({ action: 'setupKey' })
+client = createClient(setupKey)
 
 // ---- The fictional site ----
 
@@ -166,17 +160,17 @@ const setupShot = async (check: string) => {
   return setup.shot()
 }
 frames.push(['screenshot-3-setup.png', frame({
-  title: 'Set up in minutes, no terminal',
-  sub: 'A live checklist follows each step and pairs with your Mac by itself.',
+  title: 'Set up in minutes, across orbs and runners',
+  sub: 'Copy one setup key into Amp; end-to-end encrypted with forward secrecy.',
   url: 'chrome-extension://…/setup.html', tab: 'Set up Amp Browser Bridge',
-  page: await setupShot('document.querySelectorAll(".step.ok").length === 4'),
+  page: await setupShot('document.querySelectorAll(".step.ok").length === 3'),
 })])
-bridge.stop()
+relay.stop()
 frames.push(['screenshot-4-troubleshoot.png', frame({
   title: 'Every failing step says how to fix it',
-  sub: 'The extension only talks to the bridge on your own computer, at 127.0.0.1.',
+  sub: 'The reflector sees only ciphertext and reconnects automatically.',
   url: 'chrome-extension://…/setup.html', tab: 'Set up Amp Browser Bridge',
-  page: await setupShot('document.getElementById("bridge").classList.contains("fail")'),
+  page: await setupShot('document.getElementById("relay").classList.contains("fail")'),
 })])
 frames.push(['promo-small-440x280.png', promoTile()])
 
@@ -201,7 +195,6 @@ ws.close()
 chrome.kill()
 await chrome.exited
 rmSync(profile, { recursive: true, force: true })
-rmSync(dir, { recursive: true, force: true })
 
 // ---- Templates ----
 

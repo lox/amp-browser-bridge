@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "types": ["bun"]
   },
-  "include": ["plugin", "scripts", "test"]
+  "include": ["plugin", "relay", "scripts", "test"]
 }
