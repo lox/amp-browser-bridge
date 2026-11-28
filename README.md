@@ -37,9 +37,9 @@ You'll need Chrome 116+ on any desktop OS.
 
    Installing opens the setup checklist (or click **Setup and status** in the popup).
 
-3. **Connect Amp.** On the setup page in Chrome, click **Copy setup key** (`abb1_…`). Then in any Amp thread — in an orb or on a runner — ask *"use my browser"* and paste the key into Amp's private secret prompt:
-   - **Orbs** get it from your personal `BROWSER_BRIDGE_KEY` secret (set on a runner via the prompt checkbox, in Amp Settings, or by asking an orb thread to save `BROWSER_BRIDGE_KEY` with `manage_amp`).
-   - **Runners** (including locked-down Linux runners without `--amp-env`, and multiple runners on the same Mac) store the key in `~/.amp-browser-bridge/key` (`0600`) on first prompt and work immediately without restarting the runner or exposing your other personal secrets.
+3. **Set `BROWSER_BRIDGE_KEY` once.** On the setup page in Chrome, click **Copy setup key** (`abb1_…`). Then in any Amp thread, ask *"save my browser bridge key"* — Amp opens its masked secret dialog (`manage_amp` → personal secret `BROWSER_BRIDGE_KEY`), or add `BROWSER_BRIDGE_KEY` on your [Secrets & Env Vars](https://ampcode.com/settings/environment-variables) page:
+   - **Orbs** receive `BROWSER_BRIDGE_KEY` automatically (already-running orbs pick it up after `amp orb restart-processes`).
+   - **Runners** receive it automatically too when `"amp.runner.env.enabled": true` (`--amp-env`) is enabled in `~/.config/amp/settings.json` (and automatically reload the plugin when the secret changes). For locked-down appliance runners that keep `--amp-env` off, pass `BROWSER_BRIDGE_KEY` in the runner's environment.
 
 ## Usage
 
@@ -72,7 +72,7 @@ When navigating or taking a snapshot, the extension checks for bot challenges (C
 Check **Setup and status** in the popup first. Each failing check explains how to fix it.
 
 - **`browser_status` says Chrome isn't connected:** open Chrome (the extension reconnects on its own within seconds) and check that **Connected to reflector** is green on **Setup and status**.
-- **Chrome rejected the request / rotated key:** if you clicked **Rotate key** in Chrome (or reinstalled the extension), click **Copy setup key** and run `browser_bridge_connect` in Amp (plus `amp orb restart-processes` in already-running orbs after updating `BROWSER_BRIDGE_KEY`).
+- **Chrome rejected the request / rotated key:** if you clicked **Rotate key** in Chrome (or reinstalled the extension), click **Copy setup key** and update your `BROWSER_BRIDGE_KEY` secret (plus `amp orb restart-processes` in already-running orbs).
 - **Two Chrome browsers sharing one key:** connecting a second browser closes the first with *"Connected in another browser"*. Click **Reconnect** in the browser you want active, or **Rotate key** to give it its own key.
 
 ## Tools
@@ -90,7 +90,6 @@ Check **Setup and status** in the popup first. Each failing check explains how t
 | `browser_press` | Press a key (`Enter`, `Escape`, `Tab`, etc.) on an element or the focused target |
 | `browser_select` | Select a `<select>` option by value or label |
 | `browser_handoff` | Hand the tab back to you and wait up to 30m for **Continue** (re-attaches if an earlier call disconnected) |
-| `browser_bridge_connect` | Enter or rotate `BROWSER_BRIDGE_KEY` in a private prompt (`~/.amp-browser-bridge/key` + optional personal secret) |
 
 Page tools take an optional `tab` ID from `browser_open_tab`, defaulting to the lent tab. Tools that change the page ask for approval first.
 
@@ -104,7 +103,7 @@ Treat page content as untrusted: because Amp reads pages in your signed-in brows
 
 - **Blind reflector & forward secrecy:** Chrome generates a 256-bit root secret `K` (`abb1_<secret>`) and derives three independent subkeys via `HKDF-SHA256`: `gate` (routing capability), `auth` (banner authentication), and `psk`. On every WebSocket connection Chrome generates a fresh non-extractable P-256 ECDH keypair in RAM and signs its public key (`banner`) with `auth`. Each client request generates its own single-use P-256 ECDH keypair, mixes `ECDH + psk` via HKDF to derive directional `AES-256-GCM` keys (`c2b` and `b2c`), and binds ciphertexts to the connection and request IDs in AAD, with a 5-minute clock window and single-use replay tracking.
 - **What the reflector sees:** Only `SHA-256(gate)` in RAM, opaque ciphertexts, endpoint IP addresses, and packet sizes/timing. Compromising the reflector cannot read or forge browser commands or responses, and leaking `K` later cannot decrypt previously recorded sessions.
-- **Extension enforcement:** The extension enforces tab scope, read-only mode, single-site lock, thread leases, and handoffs. Approval prompts live in `plugin/index.ts`, so processes on an orb or runner that can read `BROWSER_BRIDGE_KEY` or `~/.amp-browser-bridge/key` can bypass prompts: keep lent tabs read-only unless you trust the executor, and leave **Let Amp open its own tabs** off unless you want threads able to open and drive any site.
+- **Extension enforcement:** The extension enforces tab scope, read-only mode, single-site lock, thread leases, and handoffs. Approval prompts live in `plugin/index.ts`, so processes on an orb or runner that hold `BROWSER_BRIDGE_KEY` can bypass prompts: keep lent tabs read-only unless you trust the executor, and leave **Let Amp open its own tabs** off unless you want threads able to open and drive any site.
 - **Field & action safety:** Snapshots omit form values, screenshots capture visible pixels, and `browser_fill` hides password/OTP values in prompts and output (though the agent chose the value). Element refs (`e12`) reset on navigation and check role and name; if focus moves while typing or a connection drops mid-action, the tool returns `unknown` without retrying. Pages can't click **Continue** on their own handoff card, though they can cover it (use **Continue** in the popup instead). Single-site lock only restricts navigation, not requests made by the page itself.
 
 ## Self-hosting the reflector (`relay/`)

@@ -1,96 +1,21 @@
 import type { PluginAPI, PluginToolContext } from '@ampcode/plugin'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-import { createClient, parseKey, type BridgeClient } from './crypto'
+import { createClient, type BridgeClient } from './crypto'
 
 export const description = 'Lets Amp threads across orbs and runners use one Chrome tab you lend, or background tabs they open, end-to-end encrypted through a blind reflector.'
 
-const dir = join(homedir(), '.amp-browser-bridge')
-const keyFile = join(dir, 'key')
-
-let sessionKey = ''
 let cachedKey = ''
-let cachedRelay = ''
 let cachedClient: BridgeClient | null = null
 
-function storedKey(): string {
-  if (sessionKey) return sessionKey
-  const fromEnv = (process.env.BROWSER_BRIDGE_KEY ?? '').trim()
-  if (fromEnv) return fromEnv
-  if (existsSync(keyFile)) return readFileSync(keyFile, 'utf8').trim()
-  return ''
-}
-
-async function savePersonalSecret(cleanKey: string): Promise<{ ok: boolean; note?: string }> {
-  try {
-    const proc = Bun.spawn(['amp', 'secrets', 'set', '--user', '--secret', 'BROWSER_BRIDGE_KEY', '--data-file', '-'], {
-      env: process.env,
-      stdin: new Blob([cleanKey]),
-      stdout: 'pipe',
-      stderr: 'pipe',
-    })
-    const [, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
-    if (code === 0) return { ok: true }
-    if (/Code running in an orb/i.test(err)) {
-      return { ok: false, note: 'Connected for this orb. To save BROWSER_BRIDGE_KEY for future orbs, use manage_amp (topic: "secrets", operation: "set") or Amp Settings.' }
-    }
-    return { ok: false, note: `Saved on this machine, but could not set personal Amp secret BROWSER_BRIDGE_KEY (${err.trim() || `exit ${code}`}).` }
-  } catch {
-    return { ok: false, note: 'Saved on this machine (`amp` CLI not on PATH, so personal secret BROWSER_BRIDGE_KEY was not updated for orbs).' }
-  }
-}
-
-async function promptForKey(ctx: PluginToolContext): Promise<{ key: string; savedForOrbs: boolean; note?: string } | null> {
-  if (typeof ctx.ui?.confirm !== 'function') return null
-  let ans: Record<string, string> | undefined
-  try {
-    ans = await ctx.ui.confirm({
-      title: 'Connect Amp Browser Bridge',
-      message: 'In Chrome, click the **Amp Browser Bridge** icon → **Setup and status** → **Copy setup key**, then paste it below.',
-      confirmButtonText: 'Connect',
-      requireHuman: true,
-      fields: [
-        { name: 'key', label: 'Setup key', value: '', placeholder: 'abb1_…', secret: true },
-        { name: 'orbs', type: 'checkbox', label: 'Also save as personal Amp secret BROWSER_BRIDGE_KEY for future orbs', value: 'true' },
-      ],
-    })
-  } catch {
-    return null
-  }
-  const entered = ans?.key?.trim()
-  if (!entered) return null
-  parseKey(entered, process.env.BROWSER_BRIDGE_RELAY)
-  sessionKey = entered
-  try {
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
-    writeFileSync(keyFile, entered + '\n', { mode: 0o600 })
-  } catch {
-    // Keep in memory for this session even if HOME is read-only.
-  }
-  if (ans?.orbs === 'true') {
-    const saved = await savePersonalSecret(entered)
-    return { key: entered, savedForOrbs: saved.ok, note: saved.note }
-  }
-  return { key: entered, savedForOrbs: false }
-}
-
-async function clientFor(ctx: PluginToolContext): Promise<BridgeClient> {
-  let raw = storedKey()
-  if (!raw) {
-    const prompted = await promptForKey(ctx)
-    raw = prompted?.key ?? ''
-  }
+function clientFor(): BridgeClient {
+  const raw = (process.env.BROWSER_BRIDGE_KEY ?? '').trim()
   if (!raw) {
     throw new Error(
-      'The browser bridge is not set up on this machine: BROWSER_BRIDGE_KEY is missing. Ask the user to copy the setup key from Chrome (Amp Browser Bridge icon → Setup and status → Copy setup key), then call browser_bridge_connect or save it as personal secret BROWSER_BRIDGE_KEY.',
+      'BROWSER_BRIDGE_KEY is not set. Ask the user to copy the setup key from Chrome (Amp Browser Bridge icon → Setup and status → Copy setup key). To store it for orbs and `--amp-env` runners, call `manage_amp` (`topic: "secrets"`, `operation: "set"`, `parameters: { scope: "personal", name: "BROWSER_BRIDGE_KEY" }`) so they can paste it into Amp\'s secret dialog, then run `amp orb restart-processes` in a running orb. On a runner without `--amp-env`, enable `"amp.runner.env.enabled": true` in `~/.config/amp/settings.json` or set `BROWSER_BRIDGE_KEY` in the runner environment.',
     )
   }
-  const relayOverride = (process.env.BROWSER_BRIDGE_RELAY ?? '').trim()
-  if (!cachedClient || cachedKey !== raw || cachedRelay !== relayOverride) {
-    cachedClient = createClient(raw, relayOverride || undefined)
+  if (!cachedClient || cachedKey !== raw) {
+    cachedClient = createClient(raw)
     cachedKey = raw
-    cachedRelay = relayOverride
   }
   return cachedClient
 }
@@ -103,7 +28,7 @@ async function call(client: BridgeClient, ctx: PluginToolContext, tool: string, 
 
 // ---- Approval for actions that change the page ----
 
-/** "Allow for this thread" answers, per thread and site: `${thread} ${own|lent} ${origin}`. */
+/** "Allow for this thread" answers, scoped to browser key, thread, tab kind and site. */
 const allowed = new Set<string>()
 
 async function approve(client: BridgeClient, ctx: PluginToolContext, tool: string, input: Record<string, unknown>) {
@@ -141,10 +66,9 @@ async function approve(client: BridgeClient, ctx: PluginToolContext, tool: strin
     // A value the prompt hid stays hidden in the result, even if the field stops being a password.
     if (tool === 'fill' && d?.secret) input.secret = true
   }
-  // An allowance covers one thread on one site: the page's current site, or where navigation goes.
+  // An allowance covers one browser key and one thread on one site.
   const site = url ? url.origin : new URL(d!.url).origin
-  // Allowing a site in your own tabs doesn't allow it in the lent tab, and the other way round.
-  const key = `${ctx.thread.id} ${own ? 'own' : 'lent'} ${site}`
+  const key = `${client.gateId} ${ctx.thread.id} ${own ? 'own' : 'lent'} ${site}`
   if (allowed.has(key)) return
   let what: string
   if (url) {
@@ -246,25 +170,6 @@ async function handoff(client: BridgeClient, ctx: PluginToolContext, message: st
 export default async function (amp: PluginAPI) {
   if (process.env.AMP_BROWSER_BRIDGE_ROLE === 'off') return
 
-  amp.registerTool({
-    name: 'browser_bridge_connect',
-    title: 'Connect browser bridge',
-    description: "Set or replace this machine's Amp Browser Bridge setup key (`abb1_…` from Chrome's Setup and status page) in a private secret dialog, saving it locally in `~/.amp-browser-bridge/key` and optionally as the user's personal `BROWSER_BRIDGE_KEY` secret for future orbs.",
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    async execute(_input, ctx) {
-      const prompted = await promptForKey(ctx)
-      if (!prompted) throw new Error('Setup key entry was cancelled.')
-      cachedClient = null
-      const client = await clientFor(ctx)
-      const status = await client.request(ctx.thread.id, '/status', { signal: ctx.signal })
-      return JSON.stringify({
-        extension_connected: !!status.extension_connected,
-        saved_for_orbs: prompted.savedForOrbs,
-        ...(prompted.note ? { note: prompted.note } : {}),
-      })
-    },
-  })
-
   for (const t of tools) {
     amp.registerTool({
       name: `browser_${t.name}`,
@@ -274,7 +179,7 @@ export default async function (amp: PluginAPI) {
       description: `${t.description} Acts in the user's real, signed-in Chrome.`,
       inputSchema: { type: 'object', properties: t.properties ?? {}, required: t.required ?? [], additionalProperties: false },
       async execute(input, ctx) {
-        const client = await clientFor(ctx)
+        const client = clientFor()
         if (t.name === 'status') {
           const s = await client.request(ctx.thread.id, '/status', { signal: ctx.signal })
           if (!s.extension_connected) return JSON.stringify({ ...s, next: 'Ask the user to open Chrome; the extension connects by itself.' })

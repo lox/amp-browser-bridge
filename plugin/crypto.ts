@@ -13,6 +13,8 @@ const BANNER_CONTEXT = 'amp-browser-bridge-v3|banner'
 const REQ_CONTEXT = 'amp-browser-bridge-v3|req'
 const KEYS_INFO = 'amp-browser-bridge-v3|keys'
 const GCM_TAG_BYTES = 16
+const MAX_BANNER_BYTES = 8 * 1024
+const MAX_CIPHERTEXT_BYTES = 4 * 1024 * 1024 + 64 * 1024
 
 export type Banner = { conn_id: string; b_pk: string; sig: string }
 export type RootKeys = { gate: string; auth: Buffer; psk: Buffer }
@@ -102,6 +104,33 @@ function gcmDecrypt(key: Buffer, iv: Buffer, encoded: string, aad: string): Buff
   }
 }
 
+/** Reads an HTTP body up to `maxBytes` so an untrusted reflector cannot exhaust client memory. */
+async function readBoundedText(res: Response, maxBytes: number): Promise<string> {
+  const declared = Number(res.headers.get('content-length') ?? 0)
+  if (declared > maxBytes) throw new Error(`Reflector response exceeded ${maxBytes} bytes.`)
+  if (!res.body) return ''
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) {
+        total += value.byteLength
+        if (total > maxBytes) {
+          await reader.cancel().catch(() => {})
+          throw new Error(`Reflector response exceeded ${maxBytes} bytes.`)
+        }
+        chunks.push(value)
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return Buffer.concat(chunks, total).toString('utf8')
+}
+
 /**
  * Seals one HTTP-like request to Chrome's current ephemeral `banner`, returning the wire envelope
  * and an opener that accepts only the matching response ciphertext from that exact request.
@@ -157,30 +186,32 @@ export function sealRequest(root: RootKeys, banner: Banner, req: RequestPlaintex
 
 export interface BridgeClient {
   readonly relay: string
+  readonly gateId: string
   requestRaw(thread: string, path: string, init?: { method?: string; body?: string; signal?: AbortSignal }): Promise<{ status: number; data: any }>
   request(thread: string, path: string, init?: { method?: string; body?: string; signal?: AbortSignal }): Promise<any>
   call(thread: string, tool: string, args?: Record<string, unknown>, signal?: AbortSignal): Promise<any>
 }
 
 /**
- * End-to-end encrypted client for one `abb1_…` setup key. Caches Chrome's signed ephemeral P-256
- * banner in memory and refreshes it once on HTTP 409 (when Chrome reconnected and rotated its
- * ephemeral key before the reflector forwarded anything). Browser actions (`/call`) are never
- * retried once forwarded: a dropped socket or lost answer returns `{unknown: true}`.
+ * End-to-end encrypted client for one `abb1_…` setup key. Read-only requests (`/status`, handoff
+ * polls) refresh a stale ephemeral banner once on HTTP 409; browser commands (`/call`) are NEVER
+ * sent twice, and require an authenticated response ciphertext or report `{unknown: true}`.
  */
 export function createClient(rawKey: string, relayOverride?: string): BridgeClient {
   const { secret, relay } = parseKey(rawKey, relayOverride)
   const root = deriveRoot(secret)
+  const gateId = root.gate.slice(0, 12)
   let cachedBanner: Banner | null = null
 
   async function fetchBanner(signal?: AbortSignal): Promise<Banner | null> {
-    const res = await fetch(`${relay}/banner`, { headers: { 'x-bridge-gate': root.gate }, signal })
+    const res = await fetch(`${relay}/banner`, { headers: { 'x-bridge-gate': root.gate }, redirect: 'manual', signal })
     if (res.status === 404) return null
     if (res.status >= 502 && res.status <= 504) {
       throw Object.assign(new Error(`The browser bridge reflector is temporarily unavailable (HTTP ${res.status}).`), { transient: true })
     }
     if (!res.ok) throw new Error(`Unexpected reflector response on /banner (HTTP ${res.status}).`)
-    const { banner } = (await res.json()) as { banner?: unknown }
+    const text = await readBoundedText(res, MAX_BANNER_BYTES)
+    const { banner } = JSON.parse(text) as { banner?: unknown }
     if (!verifyBanner(root, banner)) {
       throw new Error("The reflector returned a browser key whose signature is missing or wrong. Check that BROWSER_BRIDGE_KEY matches Chrome's current setup key.")
     }
@@ -205,8 +236,9 @@ export function createClient(rawKey: string, relayOverride?: string): BridgeClie
     const command = path === '/call'
     const method = init.method ?? 'GET'
     const body = init.body ?? ''
+    const maxAttempts = command ? 1 : 2
 
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       let banner = cachedBanner
       if (!banner) {
         banner = await fetchBanner(init.signal)
@@ -219,11 +251,12 @@ export function createClient(rawKey: string, relayOverride?: string): BridgeClie
       try {
         res = await fetch(`${relay}/forward`, {
           method: 'POST',
+          redirect: 'manual',
           signal: init.signal,
           headers: { 'x-bridge-gate': root.gate, 'content-type': 'application/json' },
           body: JSON.stringify(sealed.envelope),
         })
-        text = await res.text()
+        text = await readBoundedText(res, res.ok ? MAX_CIPHERTEXT_BYTES : MAX_BANNER_BYTES)
       } catch (error: any) {
         if (command) {
           return {
@@ -237,48 +270,42 @@ export function createClient(rawKey: string, relayOverride?: string): BridgeClie
         throw error
       }
 
-      // Chrome reconnected with a new ephemeral key; the reflector rejected our stale conn_id before touching Chrome.
-      if (res.status === 409 && attempt === 0) {
+      if (res.status === 409) {
         let next: unknown
         try {
           next = JSON.parse(text)?.banner
         } catch {}
-        if (!verifyBanner(root, next)) {
-          throw new Error("The reflector returned a browser key whose signature is missing or wrong. Check that BROWSER_BRIDGE_KEY matches Chrome's current setup key.")
-        }
-        cachedBanner = next
-        continue
-      }
-
-      if (res.status === 404) {
-        cachedBanner = null
-        return disconnectedReply(path)
-      }
-
-      if (res.status === 401) {
-        cachedBanner = null
-        throw new Error("Chrome rejected this request (the setup key in Chrome may have been rotated, or one machine's clock is off). Ask the user to copy the current setup key from Chrome (Setup and status → Copy setup key) and run browser_bridge_connect.")
-      }
-
-      if (res.status >= 502 && res.status <= 504) {
-        cachedBanner = null
+        if (verifyBanner(root, next)) cachedBanner = next
+        else cachedBanner = null
+        // A signed banner proves Chrome's new key, not that an untrusted reflector dropped our command.
         if (command) {
           return {
-            status: res.status,
-            data: {
-              error:
-                res.status === 502
-                  ? 'The browser disconnected before answering; the outcome is unknown.'
-                  : `The browser did not answer before the reflector timed out (HTTP ${res.status}); the outcome is unknown.`,
-              unknown: true,
-            },
+            status: 409,
+            data: { error: 'Chrome reconnected with a new session key while sending the command; the outcome is unknown.', unknown: true },
           }
         }
-        throw Object.assign(new Error(`The browser bridge reflector is temporarily unavailable (HTTP ${res.status}).`), { transient: true })
+        if (cachedBanner && attempt === 0) continue
+        throw new Error("The reflector returned a browser key whose signature is missing or wrong. Check that BROWSER_BRIDGE_KEY matches Chrome's current setup key.")
       }
 
       if (!res.ok) {
-        if (command) return { status: res.status, data: { error: `The reflector answered HTTP ${res.status} without a result; the outcome is unknown.`, unknown: true } }
+        cachedBanner = null
+        if (command) {
+          const hint =
+            res.status === 401
+              ? 'Chrome or the reflector rejected this request (HTTP 401)'
+              : res.status === 404 || res.status === 502
+                ? 'The browser disconnected before answering'
+                : `The reflector answered HTTP ${res.status} without an authenticated result`
+          return { status: res.status, data: { error: `${hint}; the outcome is unknown.`, unknown: true } }
+        }
+        if (res.status === 404) return disconnectedReply(path)
+        if (res.status === 401) {
+          throw new Error("Chrome rejected this request (the setup key in Chrome may have been rotated, or one machine's clock is off). Ask the user to copy the current setup key from Chrome (Setup and status → Copy setup key) and update BROWSER_BRIDGE_KEY.")
+        }
+        if (res.status >= 502 && res.status <= 504) {
+          throw Object.assign(new Error(`The browser bridge reflector is temporarily unavailable (HTTP ${res.status}).`), { transient: true })
+        }
         throw new Error(`Unexpected reflector response (HTTP ${res.status}).`)
       }
 
@@ -302,6 +329,7 @@ export function createClient(rawKey: string, relayOverride?: string): BridgeClie
 
   return {
     relay,
+    gateId,
     requestRaw,
     request: async (thread, path, init) => (await requestRaw(thread, path, init)).data,
     call: async (thread, tool, args = {}, signal) =>

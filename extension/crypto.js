@@ -17,6 +17,7 @@
   const REQ_CONTEXT = "amp-browser-bridge-v3|req";
   const KEYS_INFO = "amp-browser-bridge-v3|keys";
   const REQUEST_WINDOW_MS = 5 * 60_000;
+  const CLOCK_ROLLBACK_TOLERANCE_MS = 1000;
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
@@ -44,14 +45,6 @@
       offset += a.length;
     }
     return out;
-  }
-
-  /** Constant-time string comparison. */
-  function same(expected, actual) {
-    if (typeof actual !== "string" || expected.length !== actual.length) return false;
-    let diff = 0;
-    for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ actual.charCodeAt(i);
-    return diff === 0;
   }
 
   function normalizeRelay(raw) {
@@ -124,16 +117,30 @@
 
   /**
    * Creates one WebSocket connection's ephemeral P-256 session. Its private key is non-extractable
-   * and lives only in memory for the life of this socket.
+   * and lives only in memory for the life of this socket. If the system wall clock jumps backwards,
+   * the session permanently expires (`expired: true`) so the caller reconnects and rotates `conn_id`.
    */
   async function createSession(root) {
     const pair = await crypto.subtle.generateKey({name: "ECDH", namedCurve: "P-256"}, false, ["deriveBits"]);
     const bPk = base64url(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)));
     const connId = base64url(crypto.getRandomValues(new Uint8Array(16)));
     const sig = await bannerMac(root.auth, connId, bPk);
+    /** reqId -> monotonic timestamp (`monoNow`) when accepted; retained for 2x the clock window. */
     const seen = new Map();
+    let maxWallNow = 0;
+    let lastMonoNow = 0;
+    let expired = false;
 
-    async function openRequest(envelope, now = Date.now()) {
+    async function openRequest(envelope, now = Date.now(), monoNow = performance.now()) {
+      if (expired) return {expired: true};
+      if (maxWallNow > 0 && now + CLOCK_ROLLBACK_TOLERANCE_MS < maxWallNow) {
+        expired = true;
+        return {expired: true};
+      }
+      if (now > maxWallNow) maxWallNow = now;
+      if (monoNow < lastMonoNow) monoNow = lastMonoNow;
+      lastMonoNow = monoNow;
+
       if (!envelope || typeof envelope !== "object") return null;
       const {req_id: reqId, c_pk: cPk, ct} = envelope;
       if (typeof reqId !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(reqId)) return null;
@@ -159,9 +166,11 @@
       }
 
       if (!plain || typeof plain.at !== "number" || Math.abs(now - plain.at) > REQUEST_WINDOW_MS) return null;
-      for (const [id, when] of seen) if (Math.abs(now - when) > REQUEST_WINDOW_MS) seen.delete(id);
+      for (const [id, seenMono] of seen) {
+        if (monoNow - seenMono > 2 * REQUEST_WINDOW_MS + 60_000) seen.delete(id);
+      }
       if (seen.has(reqId)) return null;
-      seen.set(reqId, plain.at);
+      seen.set(reqId, monoNow);
 
       return {
         request: {

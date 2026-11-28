@@ -99,6 +99,11 @@ test('rejects replays, expired timestamps, and ciphertexts from an earlier ephem
   const stale = sealRequest(pluginRoot, session1.banner, { at: 10_000_000 - 5 * 60_000 - 1, thread: '', method: 'GET', path: '/status', body: '' })
   expect(await session1.openRequest(stale.envelope, 10_000_000)).toBeNull()
 
+  // Wall-clock rollback >1s expires the session so Chrome rotates `conn_id` instead of risking replay.
+  const rolledBack = sealRequest(pluginRoot, session1.banner, { at: 9_900_000, thread: '', method: 'GET', path: '/status', body: '' })
+  expect(await session1.openRequest(rolledBack.envelope, 9_900_000)).toEqual({ expired: true })
+  expect(await session1.openRequest(rolledBack.envelope, 10_000_000)).toEqual({ expired: true })
+
   // Reconnect creates a new ephemeral keypair: captured traffic from session1 cannot be opened by session2,
   // and someone who later learns `secret` still lacks both ephemeral private keys.
   const captured = sealRequest(pluginRoot, session1.banner, {

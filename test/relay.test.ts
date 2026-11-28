@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test'
 import '../extension/crypto.js'
-import { deriveRoot, generateSecret, sealRequest } from '../plugin/crypto'
+import { createClient, deriveRoot, formatKey, generateSecret, sealRequest } from '../plugin/crypto'
 import { startRelay } from '../relay/server'
 
 const Browser = (globalThis as any).BridgeCrypto
@@ -156,6 +156,32 @@ test('blocks web origins, missing gates, offline channels, and stale banners wit
   expect(secondSawRequest).toBe(false)
   const { banner: freshBanner } = await staleRes.json()
   expect(freshBanner).toEqual(second.session.banner)
+
+  // A client's `/status` refreshes a stale banner on 409 and succeeds, whereas `/call` NEVER retries on 409 (reports unknown: true and caches the new banner for next time).
+  const thirdSecret = generateSecret()
+  let thirdCalls = 0
+  const thirdA = await connectFakeBrowser(base, thirdSecret, () => {
+    thirdCalls++
+    return { status: 200, body: '{"result":{"ok":true}}' }
+  })
+  const client = createClient(formatKey(thirdSecret, base))
+  expect((await client.request(THREAD, '/status')).result).toEqual({ ok: true })
+  expect(thirdCalls).toBe(1)
+
+  const thirdB = await connectFakeBrowser(base, thirdSecret, () => {
+    thirdCalls++
+    return { status: 200, body: '{"result":{"clicked":"e1"}}' }
+  })
+  await thirdA.closed
+  // Cached banner still points at thirdA -> `/call` receives 409, does NOT resend to thirdB, returns unknown: true!
+  const cmdOn409 = await client.call(THREAD, 'click', { ref: 'e1' })
+  expect(cmdOn409.unknown).toBe(true)
+  expect(thirdCalls).toBe(1)
+  // Subsequent call uses the newly cached verified banner from 409 and reaches thirdB once.
+  const nextCmd = await client.call(THREAD, 'click', { ref: 'e1' })
+  expect(nextCmd.result).toEqual({ clicked: 'e1' })
+  expect(thirdCalls).toBe(2)
+  thirdB.ws.close()
 })
 
 test('disconnect mid-flight returns 502 dropped, and unresponsive browser times out with 504', async () => {
@@ -211,17 +237,23 @@ test('fair-shares sockets across shared NATs, preempts pending hogs, and enforce
     expect(await closed).toBe(1009)
   }
 
-  // Unregistered connection cap blocks socket floods with 503 until slots free up or register.
+  // Unregistered connection cap evicts from the heaviest unregistered IP instead of blocking a newcomer on a fresh IP!
   const idle1 = new WebSocket(base.replace('http', 'ws') + '/ext', { headers: { origin: ORIGIN, 'fly-client-ip': '203.0.113.10' } } as any)
-  const idle2 = new WebSocket(base.replace('http', 'ws') + '/ext', { headers: { origin: ORIGIN, 'fly-client-ip': '203.0.113.11' } } as any)
+  const idle2 = new WebSocket(base.replace('http', 'ws') + '/ext', { headers: { origin: ORIGIN, 'fly-client-ip': '203.0.113.10' } } as any)
   stops.push(() => {
     idle1.close()
     idle2.close()
   })
+  const idle1Closed = new Promise<number>((res) => (idle1.onclose = (e) => res(e.code)))
   await Promise.all([new Promise((res) => (idle1.onopen = res)), new Promise((res) => (idle2.onopen = res))])
-  expect((await fetch(`${base}/ext`, { headers: { origin: ORIGIN, 'fly-client-ip': '203.0.113.12' } })).status).toBe(503)
-  idle1.close()
+  // Plain HTTP GET /ext (not a WebSocket upgrade) returns 400 WITHOUT evicting anyone.
+  expect((await fetch(`${base}/ext`, { headers: { origin: ORIGIN, 'fly-client-ip': '203.0.113.99' } })).status).toBe(400)
+  expect(r.stats().unregistered).toBe(2)
+  // A real WebSocket from a fresh IP preempts 203.0.113.10's oldest unregistered socket (1013).
+  const freshWs = await connectFakeBrowser(base, generateSecret(), undefined, '203.0.113.99')
+  expect(await idle1Closed).toBe(1013)
   idle2.close()
+  freshWs.ws.close()
   await Bun.sleep(30)
 
   // Shared-NAT users can use all available capacity (all 6 sockets on one IP succeed when idle),

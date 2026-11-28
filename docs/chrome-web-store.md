@@ -95,8 +95,7 @@ local daemon, both builds work identically without special routing.
 **Moving an existing unpacked install to the store build:**
 
 1. Install from the Chrome Web Store and remove the unpacked build in `chrome://extensions`.
-2. On the setup page that opens, click **Copy setup key**, then run `browser_bridge_connect` in Amp
-   (or update your personal `BROWSER_BRIDGE_KEY` secret).
+2. On the setup page that opens, click **Copy setup key**, then update your personal `BROWSER_BRIDGE_KEY` secret in Amp.
 
 ## Store listing
 
@@ -217,11 +216,12 @@ Reviewers have no Amp account, so they can run the reflector locally on `127.0.0
 To try the extension locally on 127.0.0.1 without an Amp account:
 
 1. Install Bun (https://bun.sh), then: git clone https://github.com/lox/amp-browser-bridge && cd amp-browser-bridge && bun install && bun relay/server.ts
-2. Install the extension. On the setup page that opens, click "Change reflector", enter http://127.0.0.1:19989, and click Save. Click "Copy setup key", then in a second terminal create the key file with restricted permissions, paste the copied key, press Enter, and press Ctrl-D:
-   install -d -m 700 ~/.amp-browser-bridge && (umask 077 && cat > ~/.amp-browser-bridge/key)
+2. Install the extension. On the setup page that opens, click "Change reflector", enter http://127.0.0.1:19989, and click Save. Click "Copy setup key", then in a second terminal export it without recording it in shell history:
+   read -rs BROWSER_BRIDGE_KEY && export BROWSER_BRIDGE_KEY
+   (paste the copied key and press Enter)
 3. Open any web page, click the extension's toolbar icon, and click "Lend this tab".
 4. Read the page as an Amp thread would:
    bun scripts/call.ts snapshot
-   Requests and responses are end-to-end encrypted with the key in ~/.amp-browser-bridge/key. Other tools: bun scripts/call.ts screenshot, and, after ticking "Allow clicks, typing and navigation" in the popup, bun scripts/call.ts click '{"ref":"e1"}' with a ref from the snapshot.
+   Requests and responses are end-to-end encrypted with BROWSER_BRIDGE_KEY. Other tools: bun scripts/call.ts screenshot, and, after ticking "Allow clicks, typing and navigation" in the popup, bun scripts/call.ts click '{"ref":"e1"}' with a ref from the snapshot.
 5. Hand the tab to the user: bun scripts/call.ts handoff '{"message":"Sign in, then click Continue"}'. A card appears on the page; Continue ends it.
 ```

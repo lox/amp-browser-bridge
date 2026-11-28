@@ -268,7 +268,7 @@ async function routeRequest(req) {
   }
 
   const [, id, cancel] = handoffRoute;
-  const [active, history] = await Promise.all([session.get("handoff"), session.get("handoffHistory")]);
+  const {handoff: active, handoffHistory: history} = await chrome.storage.session.get(["handoff", "handoffHistory"]);
   const rec = active?.id === id ? active : history?.[id];
   if (rec?.tab == null) {
     const denied = await acquireLease(req.thread);
@@ -288,9 +288,15 @@ async function routeRequest(req) {
   return jsonResponse(404, {error: "Not found."});
 }
 
+const DISPLACED_MSG = "Another browser connected with this setup key. Click Reconnect to take over, or Rotate key.";
+
 async function connect() {
   const seq = ++connectSeq;
   clearTimeout(reconnectTimer);
+  if (await session.get("displaced")) {
+    lastError = DISPLACED_MSG;
+    return;
+  }
   const cfg = await ensureConfig();
   if (seq !== connectSeq) return;
 
@@ -345,8 +351,9 @@ async function connect() {
     if (msg?.type === "pong") return;
     if (msg?.type === "req" && typeof msg.relay_id === "string") {
       const opened = await netSession.openRequest(msg);
-      if (!opened) {
+      if (!opened || opened.expired) {
         rawSend(ws, {type: "res", relay_id: msg.relay_id, error: "unauthorized"});
+        if (opened?.expired && socket === ws) ws.close();
         return;
       }
       if (!everUsed) {
@@ -371,7 +378,8 @@ async function connect() {
     ready = false;
     clearInterval(heartbeat);
     if (event.code === 4001) {
-      lastError = "Another browser connected with this setup key. Click Reconnect to take over, or Rotate key.";
+      lastError = DISPLACED_MSG;
+      session.set("displaced", true);
       return;
     }
     if (event.code === 1008) {
@@ -1051,7 +1059,6 @@ function finishHandoff(id, outcome) {
     const active = await session.get("handoff");
     if (!active || (id && active.id !== id)) return;
     const ended = Date.now();
-    await session.remove("handoff");
     const history = (await session.get("handoffHistory")) || {};
     for (const [oldId, h] of Object.entries(history)) {
       if (ended - (h.ended || 0) > HANDOFF_HISTORY_TTL_MS) delete history[oldId];
@@ -1059,8 +1066,8 @@ function finishHandoff(id, outcome) {
     history[active.id] = {id: active.id, thread: active.thread, tab: active.tab, ended, outcome};
     const latest = (await session.get("latestHandoff")) || {};
     latest[active.thread] = {id: active.id, message: active.message, started: active.started, ended, outcome};
-    await session.set("handoffHistory", history);
-    await session.set("latestHandoff", latest);
+    // Single atomic update so no concurrent poll can see `handoff` cleared before `handoffHistory` is written.
+    await chrome.storage.session.set({handoff: null, handoffHistory: history, latestHandoff: latest});
     await chrome.alarms.clear(`handoff-timeout:${active.id}`).catch(() => {});
     await removeCard(active.tabId);
     await badge();
@@ -1073,7 +1080,7 @@ function finishHandoff(id, outcome) {
 }
 
 async function waitHandoff(id, waitMs) {
-  const [active, history] = await Promise.all([session.get("handoff"), session.get("handoffHistory")]);
+  const {handoff: active, handoffHistory: history} = await chrome.storage.session.get(["handoff", "handoffHistory"]);
   if (history?.[id]?.outcome) return history[id].outcome;
   if (active?.id !== id) return {error: "Unknown handoff."};
   const limit = Math.min(Math.max(waitMs || 0, 0), LONG_POLL_MAX_MS);
@@ -1367,6 +1374,7 @@ async function rotateKey() {
     await chrome.storage.local.set({bridgeKey: {version: 3, secret}, everUsed: false});
   });
   await session.remove("lease");
+  await session.remove("displaced");
   lastError = "";
   await connect();
 }
@@ -1378,22 +1386,23 @@ async function setRelay(raw) {
     if (relay === BridgeCrypto.DEFAULT_RELAY) await chrome.storage.local.remove("relay");
     else await chrome.storage.local.set({relay});
   });
+  await session.remove("displaced");
   lastError = "";
   await connect();
 }
 
 // Creating an alarm again restarts its timer, and the worker starts often; create it once.
 chrome.alarms.get("close-idle-agent-tabs").then((alarm) => alarm || chrome.alarms.create("close-idle-agent-tabs", {periodInMinutes: 1}));
-chrome.alarms.onAlarm.addListener((alarm) => {
+chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === "close-idle-agent-tabs") {
     closeIdleAgentTabs();
-    if (!socket && !lastError.startsWith("Another browser")) connect();
+    if (!socket && !(await session.get("displaced"))) connect();
   } else if (alarm.name.startsWith("handoff-timeout:")) {
     finishHandoff(alarm.name.slice("handoff-timeout:".length), {error: "The user did not click Continue within 30 minutes."});
   }
 });
-self.addEventListener("online", () => {
-  if (!socket && !lastError.startsWith("Another browser")) connect();
+self.addEventListener("online", async () => {
+  if (!socket && !(await session.get("displaced"))) connect();
 });
 // Tab IDs start over when Chrome restarts, so a recorded ID could now be one of your tabs.
 chrome.runtime.onStartup.addListener(() => chrome.storage.local.remove("agentTabs"));
@@ -1445,6 +1454,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       return {};
     }
     if (message.action === "reconnect") {
+      await session.remove("displaced");
       lastError = "";
       await connect();
       return {};

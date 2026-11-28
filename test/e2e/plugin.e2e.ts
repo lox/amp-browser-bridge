@@ -19,7 +19,7 @@ const ref = (re: RegExp, s: string) => s.split('\n').find((l) => re.test(l))?.ma
 {
   const names = [...tools.keys()]
   const core = ['status', 'snapshot', 'screenshot', 'scroll', 'click', 'type', 'navigate', 'handoff', 'open_tab', 'close_tab'].map((t) => `browser_${t}`)
-  check('registers the page tools and browser_bridge_connect (no host-only pair or publish)', core.every((t) => tools.has(t)) && tools.has('browser_bridge_connect') && !tools.has('browser_bridge_publish') && !tools.has('browser_bridge_pair'), names)
+  check('registers only the page tools (no host-only pair, publish or custom secret tools)', core.every((t) => tools.has(t)) && names.every((t) => t.startsWith('browser_') && !t.startsWith('browser_bridge_')), names)
   // A thread only sees undeferred tools before it searches, so "I lent you a tab" has to land on browser_status.
   const upFront = names.filter((t) => tools.get(t).defer === false)
   check('only browser_status is in the tool list up front, and it says what lending means', upFront.join() === 'browser_status' && /lent \(or will lend\) you a tab/.test(tools.get('browser_status').description), upFront)

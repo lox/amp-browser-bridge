@@ -49,9 +49,9 @@ function render(s) {
   if (!editingRelay) $("relayInput").value = s.relay || "";
 
   if (s.everUsed) {
-    step("amp", "ok", "Amp has connected with this browser's setup key. Copy the same key to connect another runner, or rotate it to revoke old machines.");
+    step("amp", "ok", "Amp has connected with this browser's setup key. Copy it if you need to update BROWSER_BRIDGE_KEY, or rotate it to revoke access.");
   } else {
-    step("amp", "", `Click <b>Copy setup key</b>, then ask any Amp thread (in an orb or on a runner) to use your browser and paste the key when prompted.`);
+    step("amp", "", `Click <b>Copy setup key</b>, then save it as your personal Amp secret <code>BROWSER_BRIDGE_KEY</code> (or ask any Amp thread to set it for you).`);
   }
   $("copyKey").classList.toggle("primary", !s.everUsed);
 

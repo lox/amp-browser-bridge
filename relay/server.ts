@@ -14,14 +14,19 @@ const REGISTER_TIMEOUT_MS = 10_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 70_000
 const IDLE_TIMEOUT_S = 90
 const MAX_REQ_BYTES = 256 * 1024
+const MAX_CONCURRENT_UPLOADS = 64
 const MAX_WS_FRAME_BYTES = 64 * 1024
+const MAX_WS_OUTBOUND_BYTES = 512 * 1024
 const MAX_RES_CHARS = 4 * 1024 * 1024
 const MAX_STREAM_QUEUE_BYTES = 256 * 1024
+const MAX_STREAM_QUEUE_CHUNKS = 32
+const CHUNK_OVERHEAD_BYTES = 256
 const MAX_GLOBAL_STREAM_BYTES = 32 * 1024 * 1024
 const MAX_PENDING_PER_CHANNEL = 4
-const MAX_GLOBAL_PENDING = 2048
-const MAX_UNREGISTERED_SOCKETS = 256
-const MAX_TOTAL_SOCKETS = 2048
+const MAX_GLOBAL_PENDING = 1024
+// Kept well below Fly's 2,000-connection hard_limit so HTTP /banner, /forward and /healthz always have headroom.
+const MAX_UNREGISTERED_SOCKETS = 128
+const MAX_TOTAL_SOCKETS = 1024
 
 const encoder = new TextEncoder()
 
@@ -35,7 +40,8 @@ type Pending = {
   timer: Timer
   totalChars: number
   queue: Uint8Array[]
-  inFlightBytes: number
+  queueHead: number
+  inFlightCost: number
   bufferedBytes: number
   wantPull: boolean
   inputDone: boolean
@@ -140,11 +146,13 @@ export function startRelay(options: RelayOptions = {}) {
 
   const channels = new Map<string, Channel>()
   const socketsByIp = new Map<string, Set<ServerWebSocket<SocketData>>>()
-  const unregisteredSockets = new Set<ServerWebSocket<SocketData>>()
+  const unregisteredByIp = new Map<string, Set<ServerWebSocket<SocketData>>>()
   const pendingByCallerIp = new Map<string, Set<Pending>>()
   const streamsByBrowserIp = new Map<string, Set<Pending>>()
   const bufferedBytesByIp = new Map<string, number>()
+  let unregistered = 0
   let totalSockets = 0
+  let activeUploads = 0
   let globalPending = 0
   let activeStreams = 0
   let globalStreamBytes = 0
@@ -191,7 +199,8 @@ export function startRelay(options: RelayOptions = {}) {
   function releaseUnregistered(ws: ServerWebSocket<SocketData>) {
     if (!ws.data.countedUnregistered) return
     ws.data.countedUnregistered = false
-    unregisteredSockets.delete(ws)
+    unregistered = Math.max(0, unregistered - 1)
+    delSet(unregisteredByIp, ws.data.ip, ws)
   }
 
   function releaseSocket(ws: ServerWebSocket<SocketData>) {
@@ -214,36 +223,54 @@ export function startRelay(options: RelayOptions = {}) {
     victim.close(1013, 'evicted under load')
   }
 
-  /** When total sockets hit capacity, evicts from the heaviest IP (preferring sockets that never served a response). */
-  function ensureSocketSlot(incomingIp: string): boolean {
-    if (totalSockets < maxTotalSockets) return true
-    const heaviest = heaviestKey(socketsByIp)
-    const mine = socketsByIp.get(incomingIp)?.size ?? 0
-    if (heaviest && heaviest.set.size > Math.max(1, mine)) {
-      let victim: ServerWebSocket<SocketData> | undefined
-      for (const s of heaviest.set) {
-        if (!s.data.served) {
-          victim = s
-          break
-        }
-      }
-      evictSocket(victim ?? heaviest.set.values().next().value!)
-      return totalSockets < maxTotalSockets
+  /** Admits a newly upgraded WebSocket, evicting from the heaviest IP when unregistered or total pools are full. */
+  function admitOpenedSocket(ws: ServerWebSocket<SocketData>): boolean {
+    const ip = ws.data.ip
+    if (unregistered >= maxUnregistered) {
+      const heaviestUnreg = heaviestKey(unregisteredByIp)
+      const mineUnreg = unregisteredByIp.get(ip)?.size ?? 0
+      if (!heaviestUnreg || heaviestUnreg.set.size <= mineUnreg) return false
+      evictSocket(heaviestUnreg.set.values().next().value!)
     }
-    if (mine === 0) {
-      for (const set of socketsByIp.values()) {
-        for (const s of set) {
+    if (totalSockets >= maxTotalSockets) {
+      const heaviest = heaviestKey(socketsByIp)
+      const mine = socketsByIp.get(ip)?.size ?? 0
+      if (heaviest && heaviest.set.size > Math.max(1, mine)) {
+        let victim: ServerWebSocket<SocketData> | undefined
+        for (const s of heaviest.set) {
           if (!s.data.served) {
-            evictSocket(s)
-            return totalSockets < maxTotalSockets
+            victim = s
+            break
           }
         }
+        evictSocket(victim ?? heaviest.set.values().next().value!)
+      } else if (mine === 0) {
+        let evicted = false
+        for (const set of socketsByIp.values()) {
+          for (const s of set) {
+            if (!s.data.served) {
+              evictSocket(s)
+              evicted = true
+              break
+            }
+          }
+          if (evicted) break
+        }
+        if (!evicted) return false
+      } else {
+        return false
       }
     }
-    return false
+    ws.data.countedUnregistered = true
+    ws.data.countedSocket = true
+    unregistered++
+    totalSockets++
+    addSet(unregisteredByIp, ip, ws)
+    addSet(socketsByIp, ip, ws)
+    return true
   }
 
-  /** When global pending requests hit capacity, preempts the oldest wait of the heaviest caller IP if it holds more than `callerIp`. */
+  /** Reserves a pending slot before reading/forwarding, preempting the heaviest caller IP when `globalPending` is full. */
   function ensurePendingSlot(callerIp: string): boolean {
     if (globalPending < maxGlobalPending) return true
     const heaviest = heaviestKey(pendingByCallerIp)
@@ -284,7 +311,8 @@ export function startRelay(options: RelayOptions = {}) {
     delSet(pendingByCallerIp, p.callerIp, p)
     if (p.bufferedBytes > 0) subBufferedBytes(p, p.bufferedBytes)
     p.queue.length = 0
-    p.inFlightBytes = 0
+    p.queueHead = 0
+    p.inFlightCost = 0
     if (p.streaming) {
       p.streaming = false
       activeStreams = Math.max(0, activeStreams - 1)
@@ -304,13 +332,19 @@ export function startRelay(options: RelayOptions = {}) {
   function onStreamPull(slot: Channel, p: Pending) {
     if (p.released || !p.streamCtrl) return
     // `highWaterMark: 0` calls `pull` only once the previous chunk was consumed by the HTTP writer.
-    if (p.inFlightBytes > 0) {
-      subBufferedBytes(p, p.inFlightBytes)
-      p.inFlightBytes = 0
+    if (p.inFlightCost > 0) {
+      subBufferedBytes(p, p.inFlightCost)
+      p.inFlightCost = 0
     }
-    const next = p.queue.shift()
-    if (next) {
-      p.inFlightBytes = next.byteLength
+    if (p.queueHead < p.queue.length) {
+      const next = p.queue[p.queueHead]!
+      p.queue[p.queueHead] = undefined as any
+      p.queueHead++
+      if (p.queueHead === p.queue.length) {
+        p.queue.length = 0
+        p.queueHead = 0
+      }
+      p.inFlightCost = next.byteLength + CHUNK_OVERHEAD_BYTES
       p.wantPull = false
       try {
         p.streamCtrl.enqueue(next)
@@ -333,6 +367,9 @@ export function startRelay(options: RelayOptions = {}) {
   }
 
   function forwardToBrowser(slot: Channel, callerIp: string, signal: AbortSignal, outboundFrame: string, relayId: string): Promise<Response> {
+    if (slot.ws.getBufferedAmount() > MAX_WS_OUTBOUND_BYTES) {
+      return Promise.resolve(Response.json({ error: 'browser socket congested' }, { status: 503 }))
+    }
     const browserIp = slot.ws.data.ip
     return new Promise<Response>((resolve) => {
       const entry: Pending = {
@@ -343,7 +380,8 @@ export function startRelay(options: RelayOptions = {}) {
         resolve,
         totalChars: 0,
         queue: [],
-        inFlightBytes: 0,
+        queueHead: 0,
+        inFlightCost: 0,
         bufferedBytes: 0,
         wantPull: false,
         inputDone: false,
@@ -357,7 +395,9 @@ export function startRelay(options: RelayOptions = {}) {
       globalPending++
       addSet(pendingByCallerIp, callerIp, entry)
       signal.addEventListener('abort', () => settlePending(slot, entry), { once: true })
-      slot.ws.send(outboundFrame)
+      if (slot.ws.send(outboundFrame) === 0) {
+        settlePending(slot, entry, { response: Response.json({ dropped: true }, { status: 502 }) })
+      }
     })
   }
 
@@ -377,16 +417,7 @@ export function startRelay(options: RelayOptions = {}) {
           return new Response('forbidden', { status: 403 })
         }
         const ip = clientIp(req, server)
-        if (unregisteredSockets.size >= maxUnregistered) {
-          return new Response('too many pending connections', { status: 503 })
-        }
-        if (!ensureSocketSlot(ip)) {
-          return new Response('too many connections', { status: 429 })
-        }
-        if (!server.upgrade(req, { data: { ip } })) {
-          return new Response('upgrade failed', { status: 400 })
-        }
-        return undefined
+        return server.upgrade(req, { data: { ip } }) ? undefined : new Response('upgrade failed', { status: 400 })
       }
 
       const site = req.headers.get('sec-fetch-site')
@@ -405,7 +436,23 @@ export function startRelay(options: RelayOptions = {}) {
       if (url.pathname === '/forward' && req.method === 'POST') {
         const declared = Number(req.headers.get('content-length') ?? 0)
         if (declared > MAX_REQ_BYTES) return new Response('payload too large', { status: 413 })
-        const raw = await req.text()
+        // Reject unknown or saturated channels BEFORE buffering the request body.
+        const initialSlot = channels.get(channelId)
+        if (!initialSlot) return Response.json({ connected: false }, { status: 404 })
+        if (initialSlot.pending.size >= MAX_PENDING_PER_CHANNEL) {
+          return Response.json({ error: 'too many concurrent requests' }, { status: 429 })
+        }
+        if (activeUploads >= MAX_CONCURRENT_UPLOADS) {
+          return Response.json({ error: 'too many concurrent uploads' }, { status: 503 })
+        }
+
+        activeUploads++
+        let raw: string
+        try {
+          raw = await req.text()
+        } finally {
+          activeUploads = Math.max(0, activeUploads - 1)
+        }
         if (Buffer.byteLength(raw) > MAX_REQ_BYTES) return new Response('payload too large', { status: 413 })
         let env: unknown
         try {
@@ -437,16 +484,16 @@ export function startRelay(options: RelayOptions = {}) {
     websocket: {
       maxPayloadLength: MAX_WS_FRAME_BYTES,
       open(ws) {
-        ws.data.countedUnregistered = true
-        ws.data.countedSocket = true
-        unregisteredSockets.add(ws)
-        totalSockets++
-        addSet(socketsByIp, ws.data.ip, ws)
+        if (!admitOpenedSocket(ws)) {
+          ws.close(1013, 'too many connections')
+          return
+        }
         ws.data.regTimer = setTimeout(() => {
           if (!ws.data.channelId) ws.close(1008, 'registration timed out')
         }, REGISTER_TIMEOUT_MS)
       },
       message(ws, raw) {
+        if (!ws.data.countedSocket) return
         const text = String(raw)
         if (!ws.data.channelId && text.length > 4096) return ws.close(1008, 'bad registration')
         let msg: any
@@ -485,10 +532,13 @@ export function startRelay(options: RelayOptions = {}) {
           const p = slot?.pending.get(msg.relay_id)
           if (!p || p.inputDone || !msg.chunk.length) return
           const bytes = encoder.encode(msg.chunk)
+          const cost = bytes.byteLength + CHUNK_OVERHEAD_BYTES
+          const queuedChunks = p.queue.length - p.queueHead
           if (
+            queuedChunks >= MAX_STREAM_QUEUE_CHUNKS ||
             p.totalChars + msg.chunk.length > maxResChars ||
-            p.bufferedBytes + bytes.byteLength > maxStreamQueueBytes ||
-            !ensureGlobalStreamSpace(p.browserIp, bytes.byteLength)
+            p.bufferedBytes + cost > maxStreamQueueBytes ||
+            !ensureGlobalStreamSpace(p.browserIp, cost)
           ) {
             settlePending(slot!, p, { response: Response.json({ dropped: true }, { status: 502 }) })
             return
@@ -514,10 +564,10 @@ export function startRelay(options: RelayOptions = {}) {
             p.resolve(new Response(stream, { headers: { 'content-type': 'text/plain; charset=utf-8' } }))
           }
           p.totalChars += msg.chunk.length
-          addBufferedBytes(p, bytes.byteLength)
+          addBufferedBytes(p, cost)
           if (p.wantPull && p.streamCtrl) {
             p.wantPull = false
-            p.inFlightBytes = bytes.byteLength
+            p.inFlightCost = cost
             try {
               p.streamCtrl.enqueue(bytes)
             } catch {
@@ -544,10 +594,10 @@ export function startRelay(options: RelayOptions = {}) {
             }
             ws.data.served = true
             p.inputDone = true
-            if (p.wantPull && p.queue.length === 0) {
-              if (p.inFlightBytes > 0) {
-                subBufferedBytes(p, p.inFlightBytes)
-                p.inFlightBytes = 0
+            if (p.wantPull && p.queueHead >= p.queue.length) {
+              if (p.inFlightCost > 0) {
+                subBufferedBytes(p, p.inFlightCost)
+                p.inFlightCost = 0
               }
               settlePending(slot!, p)
             }
@@ -577,7 +627,7 @@ export function startRelay(options: RelayOptions = {}) {
   log(`browser bridge reflector listening on http://${server.hostname}:${server.port}`)
   return {
     server,
-    stats: () => ({ totalSockets, unregistered: unregisteredSockets.size, globalPending, activeStreams, globalStreamBytes }),
+    stats: () => ({ totalSockets, unregistered, globalPending, activeStreams, globalStreamBytes }),
     stop: () => server.stop(true),
   }
 }
