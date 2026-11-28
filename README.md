@@ -39,7 +39,7 @@ You'll need the [Amp macOS app](https://ampcode.com/docs/apps/mac) with **Run th
 
 3. **Pair.** In an Amp thread on your Mac, ask *"pair the browser extension"*. Amp opens the setup page with a one-time code and pairs automatically.
 
-4. **Publish to orbs** *(optional if you only run local Mac threads)*. In an Amp thread on your Mac, ask *"publish the browser bridge"* and confirm. Your runner must serve your home directory, or `~/.amp-browser-bridge` itself (`amp runner dirs add ~/.amp-browser-bridge`); publishing warns if it doesn't. You can archive the thread afterwards.
+4. **Publish to orbs** *(optional if you only run local Mac threads)*. In an Amp thread on your Mac, ask *"publish the browser bridge"* and confirm. Your runner must serve your home directory, or `~/.amp-browser-bridge` itself (`amp runner dirs add ~/.amp-browser-bridge`); publishing warns if it doesn't. Keep that thread unarchived: Amp refuses orbs' sign-in to an archived thread's portal.
 
 <p align="center"><img src="docs/setup-done.png" width="620" alt="The setup page with all four steps checked"></p>
 
@@ -124,7 +124,7 @@ Treat page content as untrusted: because Amp reads pages in your signed-in brows
 
 On macOS, `plugin/index.ts` runs the local bridge (`plugin/host.ts`) on `127.0.0.1:19989`; whichever Amp process binds the port first hosts it, and another takes over if it exits. Elsewhere, the plugin runs as a client, reading `BROWSER_BRIDGE_URL` and `BROWSER_BRIDGE_TOKEN`, signing in with `amp portal login-url`, and forwarding tool calls. Override the role with `AMP_BROWSER_BRIDGE_ROLE` (`host`, `client`, or `off`), change the port with `BROWSER_BRIDGE_PORT`, or run the bridge standalone with `bun plugin/host.ts`.
 
-Publishing opens a [runner portal](https://ampcode.com/docs/cli/runners) from `~/.amp-browser-bridge` (keeping the portal URL stable across restarts), stores `BROWSER_BRIDGE_TOKEN` as a personal secret and `BROWSER_BRIDGE_URL` as a personal environment variable for new orbs, and republishes through that thread on startup and every 15 minutes. The portal's URL depends on the runner and directory, not the thread, and it keeps working after the thread is archived. After a runner restart it answers 503 until republished.
+Publishing opens a [runner portal](https://ampcode.com/docs/cli/runners) from `~/.amp-browser-bridge` (keeping the portal URL stable across restarts), stores `BROWSER_BRIDGE_TOKEN` as a personal secret and `BROWSER_BRIDGE_URL` as a personal environment variable for new orbs, and republishes through that thread on startup and every 15 minutes. The portal belongs to that thread: while the thread is archived, Amp refuses orbs' sign-in to it (`amp portal login-url` says the account is not authorized), and the bridge won't republish through it. After a runner restart it answers 503 until republished.
 
 The extension (`extension/`) attaches `chrome.debugger` only to the lent tab and background tabs Amp opened. Active lend state, snapshot refs, and pending handoffs live in `chrome.storage.session` across service worker restarts; the pairing key (`extension/pairing.js`) and agent tab list live in `chrome.storage.local`. The bridge records the last extension ID seen on `/status` in `~/.amp-browser-bridge/extension-id` so pairing opens `setup.html#code=<code>` in whichever build (unpacked or Web Store) you have installed.
 

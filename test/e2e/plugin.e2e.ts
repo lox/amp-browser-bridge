@@ -97,4 +97,16 @@ await permissions(true, false)
 await run('browser_click', { ref: ref(/button "Press me"/, await snapshot()) })
 check('allowance on one site does not cover another', dialogs.length === n0 + 2, dialogs.length - n0)
 await message({ action: 'stop' })
+// While the thread the bridge was published from is archived, Amp refuses the portal sign-in and
+// nothing reaches the bridge; the error must say how to get the bridge back. In a child process,
+// whose PATH finds a fake amp that refuses like Amp does.
+{
+  const bin = (await Bun.$`mktemp -d`.text()).trim()
+  await Bun.write(`${bin}/amp`, "#!/bin/sh\necho 'Error: Authenticated, but your account is not authorized to perform this action.' >&2\nexit 1\n")
+  await Bun.$`chmod +x ${bin}/amp`
+  const script = `const p = (await import(${JSON.stringify(import.meta.dir + '/../../plugin/index')})).default; const tools = new Map(); await p({ registerTool: (t) => tools.set(t.name, t), logger: { log() {} }, onDispose() {} }); try { await tools.get('browser_status').execute({}, { thread: { id: 'T-00000000-0000-0000-0000-0000000000c1' }, signal: new AbortController().signal }); console.log('no error') } catch (e) { console.log(e.message) }`
+  const child = Bun.spawn(['bun', '-e', script], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, AMP_BROWSER_BRIDGE_ROLE: 'client', BROWSER_BRIDGE_URL: 'https://t-archived-p1.onamp.dev' }, stdout: 'pipe', stderr: 'inherit' })
+  const refused = (await new Response(child.stdout).text()).trim()
+  check('a refused portal sign-in says to unarchive the publishing thread or publish again', /unarchive that thread/.test(refused) && /publish the bridge again/.test(refused), refused)
+}
 done()

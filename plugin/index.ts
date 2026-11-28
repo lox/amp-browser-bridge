@@ -24,7 +24,12 @@ let portalCookie = ''
 async function portalLogin(base: string, signal?: AbortSignal) {
   const proc = Bun.spawn(['amp', 'portal', 'login-url', base + '/'], { stdout: 'pipe', stderr: 'pipe' })
   const out = await new Response(proc.stdout).text()
-  if ((await proc.exited) !== 0) throw new Error(`amp portal login-url failed: ${(await new Response(proc.stderr).text()).trim()}`)
+  if ((await proc.exited) !== 0) {
+    const why = (await new Response(proc.stderr).text()).trim()
+    // Amp refuses sign-in to a portal whose thread is archived, before anything reaches the Mac.
+    if (/not authorized/i.test(why)) throw new Error(`Amp refused the sign-in to the browser bridge's portal (${why.replace(/^Error:\s*/, '')}). It does this when the thread the bridge was published from is archived. Ask the user to unarchive that thread (the extension's setup page links it), or to publish the bridge again from a thread on their Mac; then run \`amp orb restart-processes\` here.`)
+    throw new Error(`amp portal login-url failed: ${why}`)
+  }
   const loginURL = out.split(/\s+/).find((word) => word.startsWith('https://'))
   if (!loginURL) throw new Error('amp portal login-url printed no URL.')
   const res = await fetch(loginURL, { redirect: 'manual', signal })
@@ -108,17 +113,13 @@ async function ampCLI(args: string[], stdin?: string) {
  * nothing when it does or when no runner reports its directories. When the thread's runner is
  * unknown, it checks every runner on this computer.
  */
-async function unservedWarning(thread: string) {
+async function unservedWarning(owner: string | undefined) {
   let runners: { runnerId: string; workingDirectory: string; serveCwd: boolean; directories: { path: string }[] }[]
   try {
     runners = JSON.parse(await ampCLI(['runner', 'list', '--json'])).runners ?? []
   } catch {
     return undefined
   }
-  let owner: string | undefined
-  try {
-    owner = JSON.parse(await ampCLI(['threads', 'export', thread])).env?.initial?.runnerID
-  } catch {}
   const mine = runners.filter((r) => r.runnerId === owner)
   if (mine.length) runners = mine
   if (!runners.length) return undefined
@@ -129,12 +130,17 @@ async function unservedWarning(thread: string) {
 }
 
 /**
- * Serves the bridge through `thread`'s runner portal and points the orbs' secrets at it. The
- * portal's hostname depends on the runner and directory, not the thread, and it keeps serving
- * after the thread is archived or deleted. The bridge calls this on every start and every
- * REPUBLISH_MS, because after a runner restart the portal answers 503 until it is published again.
+ * Serves the bridge through `thread`'s runner portal and points the orbs' secrets at it. The portal
+ * belongs to the thread: while the thread is archived, Amp refuses orbs' sign-in to it, so this
+ * refuses an archived thread. The bridge calls this on every start and every REPUBLISH_MS, because
+ * after a runner restart the portal answers 503 until it is published again.
  */
 async function publishNow(thread: string, force: boolean): Promise<Published & { warning?: string }> {
+  let info: { archived?: boolean; env?: { initial?: { runnerID?: string } } } | undefined
+  try {
+    info = JSON.parse(await ampCLI(['threads', 'export', thread]))
+  } catch {}
+  if (info?.archived) throw new Error(`Thread ${thread} is archived, and Amp refuses orbs' sign-in to an archived thread's portal. Unarchive it, or publish the bridge again from a thread on this Mac.`)
   // Runner portals get an auto-generated hostname (custom hostnames answer 503 on runners).
   const out = await ampCLI(['orb', 'portal', String(port), '--thread', thread, '--title', 'Browser bridge', '--description', 'Amp browser bridge; requires its token'])
   const url = out.split(/\s+/).filter((w) => w.startsWith('https://')).pop()?.replace(/\/$/, '')
@@ -146,7 +152,7 @@ async function publishNow(thread: string, force: boolean): Promise<Published & {
   const published = { url, thread, at: new Date().toISOString() }
   writePublished(dir, published)
   lastThread = thread
-  return { ...published, warning: await unservedWarning(thread) }
+  return { ...published, warning: await unservedWarning(info?.env?.initial?.runnerID) }
 }
 
 /** The thread last published through. It outlives a cleared published.json, so the timer can recover. */
@@ -396,18 +402,18 @@ export default async function (amp: PluginAPI) {
     amp.registerTool({
       name: 'browser_bridge_publish',
       title: 'Publish browser bridge',
-      description: "Expose this Mac's browser bridge to the user's orbs: registers this thread's portal for it and stores BROWSER_BRIDGE_URL and BROWSER_BRIDGE_TOKEN as the user's personal Amp secrets. Run it in a thread on the Mac when the user asks to set up or republish the browser bridge. Afterwards the bridge publishes itself again when it starts and every 15 minutes; archiving this thread doesn't affect the portal. If the result has a warning, tell the user how to fix it.",
+      description: "Expose this Mac's browser bridge to the user's orbs: registers this thread's portal for it and stores BROWSER_BRIDGE_URL and BROWSER_BRIDGE_TOKEN as the user's personal Amp secrets. Run it in a thread on the Mac when the user asks to set up or republish the browser bridge. Afterwards the bridge publishes itself again when it starts and every 15 minutes, through this thread; tell the user to keep it unarchived, since Amp refuses orbs' sign-in to an archived thread's portal. If the result has a warning, tell the user how to fix it.",
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       async execute(_input, ctx) {
         const ok = await ctx.ui.confirm({
           title: 'Publish the browser bridge to your orbs?',
-          message: `This thread's portal will serve the bridge on port ${port}, and your personal Amp secrets BROWSER_BRIDGE_URL and BROWSER_BRIDGE_TOKEN will be updated so new orbs can reach it. The bridge re-registers the portal when it starts and every 15 minutes, and updates these secrets itself if the URL changes. Only you can open the portal.`,
+          message: `This thread's portal will serve the bridge on port ${port}, and your personal Amp secrets BROWSER_BRIDGE_URL and BROWSER_BRIDGE_TOKEN will be updated so new orbs can reach it. The bridge re-registers the portal when it starts and every 15 minutes, and updates these secrets itself if the URL changes. Only you can open the portal, and only while this thread is unarchived.`,
           confirmButtonText: 'Publish',
           requireHuman: true,
         })
         if (!ok) throw new Error('The user cancelled publishing.')
         const { url, warning } = await publish(ctx.thread.id, true)
-        return JSON.stringify({ portal_url: url, ...(warning ? { warning } : {}), note: 'New orbs get these secrets when they start; running orbs need `amp orb restart-processes`. The bridge publishes itself again on every start and every 15 minutes; archiving this thread is fine.' })
+        return JSON.stringify({ portal_url: url, ...(warning ? { warning } : {}), note: 'New orbs get these secrets when they start; running orbs need `amp orb restart-processes`. The bridge publishes itself again on every start and every 15 minutes through this thread. Keep it unarchived: Amp refuses orbs\' sign-in to an archived thread\'s portal.' })
       },
     })
 
