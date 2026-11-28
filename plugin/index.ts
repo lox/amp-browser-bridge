@@ -136,11 +136,10 @@ async function unservedWarning(owner: string | undefined) {
  * after a runner restart the portal answers 503 until it is published again.
  */
 async function publishNow(thread: string, force: boolean): Promise<Published & { warning?: string }> {
-  let info: { archived?: boolean; env?: { initial?: { runnerID?: string } } } | undefined
-  try {
-    info = JSON.parse(await ampCLI(['threads', 'export', thread]))
-  } catch {}
-  if (info?.archived) throw new Error(`Thread ${thread} is archived, and Amp refuses orbs' sign-in to an archived thread's portal. Unarchive it, or publish the bridge again from a thread on this Mac.`)
+  // Fails closed: without the thread's state, publishing could keep orbs locked out unnoticed. The
+  // export has `archived: true` for an archived thread and no `archived` at all for a live one.
+  const info: { archived?: boolean; env?: { initial?: { runnerID?: string } } } = JSON.parse(await ampCLI(['threads', 'export', thread]))
+  if (info.archived !== undefined && info.archived !== false) throw new Error(`Thread ${thread} is archived, and Amp refuses orbs' sign-in to an archived thread's portal. Unarchive it, or publish the bridge again from a thread on this Mac.`)
   // Runner portals get an auto-generated hostname (custom hostnames answer 503 on runners).
   const out = await ampCLI(['orb', 'portal', String(port), '--thread', thread, '--title', 'Browser bridge', '--description', 'Amp browser bridge; requires its token'])
   const url = out.split(/\s+/).filter((w) => w.startsWith('https://')).pop()?.replace(/\/$/, '')
@@ -152,7 +151,7 @@ async function publishNow(thread: string, force: boolean): Promise<Published & {
   const published = { url, thread, at: new Date().toISOString() }
   writePublished(dir, published)
   lastThread = thread
-  return { ...published, warning: await unservedWarning(info?.env?.initial?.runnerID) }
+  return { ...published, warning: await unservedWarning(info.env?.initial?.runnerID) }
 }
 
 /** The thread last published through. It outlives a cleared published.json, so the timer can recover. */

@@ -17,7 +17,8 @@ if (!process.env.PUBLISH_E2E_HOME) {
   // Answers like the real CLI: `orb portal` prints the URL, `runner list --json` prints $HOME/runners.json,
   // and every thread runs on the runner "mac". `orb portal` fails while $HOME/fail exists, and takes
   // a second for the thread named in $HOME/slow. `threads export` reports the thread named in
-// $HOME/archived as archived.
+// $HOME/archived as archived (and, like the real CLI, a live thread without "archived"), and fails
+// while $HOME/export-fails exists.
   writeFileSync(join(bin, 'amp'), `#!/bin/sh
 echo "$PWD $*" >> "$HOME/amp.log"
 case "$1 $2" in
@@ -26,7 +27,7 @@ case "$1 $2" in
     [ "$5" = "$(cat "$HOME/slow" 2>/dev/null)" ] && sleep 1
     echo "Portal: ${PORTAL}/" ;;
   "runner list") cat "$HOME/runners.json" ;;
-  "threads export") [ "$3" = "$(cat "$HOME/archived" 2>/dev/null)" ] && a=true || a=false; echo '{"archived":'$a',"env":{"initial":{"runnerID":"mac"}}}' ;;
+  "threads export") [ "$3" = "$(cat "$HOME/archived" 2>/dev/null)" ] && a=true || a=false; [ -f "$HOME/export-fails" ] && exit 1; [ $a = true ] && echo '{"archived":true,"env":{"initial":{"runnerID":"mac"}}}' || echo '{"env":{"initial":{"runnerID":"mac"}}}' ;;
   "secrets set") cat > /dev/null ;;
 esac
 `)
@@ -110,6 +111,12 @@ writeFileSync(join(home, 'archived'), B3)
 check('the timer stops republishing through a thread once it is archived', await until(async () => !existsSync(join(dir, 'published.json')), 60) && logs.some((m) => m.includes(`${B3} is archived`)))
 rmSync(join(home, 'archived'))
 check('and republishes through it again once it is unarchived', await until(async () => existsSync(join(dir, 'published.json')) && publishedThread() === B3, 60))
+
+// Without the thread's state, publishing must not go ahead as if the thread were live.
+writeFileSync(join(home, 'export-fails'), '')
+const blind = await publish(B3).catch((e: Error) => e.message)
+check('publishing is refused when the thread cannot be checked', /threads export/.test(String(blind)), blind)
+rmSync(join(home, 'export-fails'))
 
 await Promise.all(disposers.map((f) => f()))
 done()
