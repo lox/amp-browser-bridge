@@ -16,7 +16,9 @@ if (!process.env.PUBLISH_E2E_HOME) {
   mkdirSync(bin)
   // Answers like the real CLI: `orb portal` prints the URL, `runner list --json` prints $HOME/runners.json,
   // and every thread runs on the runner "mac". `orb portal` fails while $HOME/fail exists, and takes
-  // a second for the thread named in $HOME/slow.
+  // a second for the thread named in $HOME/slow. `threads export` reports the thread named in
+// $HOME/archived as archived (and, like the real CLI, a live thread without "archived"), and fails
+// while $HOME/export-fails exists.
   writeFileSync(join(bin, 'amp'), `#!/bin/sh
 echo "$PWD $*" >> "$HOME/amp.log"
 case "$1 $2" in
@@ -25,7 +27,7 @@ case "$1 $2" in
     [ "$5" = "$(cat "$HOME/slow" 2>/dev/null)" ] && sleep 1
     echo "Portal: ${PORTAL}/" ;;
   "runner list") cat "$HOME/runners.json" ;;
-  "threads export") echo '{"env":{"initial":{"runnerID":"mac"}}}' ;;
+  "threads export") [ "$3" = "$(cat "$HOME/archived" 2>/dev/null)" ] && a=true || a=false; [ -f "$HOME/export-fails" ] && exit 1; [ $a = true ] && echo '{"archived":true,"env":{"initial":{"runnerID":"mac"}}}' || echo '{"env":{"initial":{"runnerID":"mac"}}}' ;;
   "secrets set") cat > /dev/null ;;
 esac
 `)
@@ -69,7 +71,7 @@ check('publish returns the portal URL and the unserved warning', unserved.portal
 // A timer republish racing this write may set them again, so check that both were set, not how often.
 check('publishing on request updates both secrets', ['BROWSER_BRIDGE_TOKEN', 'BROWSER_BRIDGE_URL'].every((name) => calls().some((c) => c.includes('secrets set') && c.includes(name))), calls())
 const wording = [tools.get('browser_bridge_publish').description, dialogs[0]?.message, unserved.note].join('\n')
-check('nothing asks to keep the publishing thread unarchived', dialogs[0]?.requireHuman === true && !/unarchiv|not to archive/i.test(wording), wording)
+check('publishing says to keep the thread unarchived', dialogs[0]?.requireHuman === true && /unarchived/.test(tools.get('browser_bridge_publish').description) && /unarchived/.test(unserved.note), wording)
 runners(['/elsewhere', home])
 check('no warning when a runner serves a directory that contains it', (await publish()).warning === undefined)
 runners([dir])
@@ -97,6 +99,50 @@ writeFileSync(join(home, 'fail'), '')
 check('failing timer republishes clear published.json, so the setup page asks to publish', await until(async () => !existsSync(join(dir, 'published.json')), 60))
 rmSync(join(home, 'fail'))
 check('the timer then republishes through the same thread and records it again', await until(async () => publishedThread() === B3, 60))
+
+// Amp refuses orbs' sign-in to an archived thread's portal, so publishing through one is refused,
+// and the timer clears the setup page's state instead of republishing through it.
+const archived = 'T-00000000-0000-0000-0000-0000000000b4'
+writeFileSync(join(home, 'archived'), archived)
+const before = portals(archived).length
+const refused = await publish(archived).catch((e: Error) => e.message)
+check('publishing through an archived thread is refused before the portal is registered', /is archived/.test(String(refused)) && portals(archived).length === before && publishedThread() === B3, refused)
+writeFileSync(join(home, 'archived'), B3)
+check('the timer stops republishing through a thread once it is archived', await until(async () => !existsSync(join(dir, 'published.json')), 60) && logs.some((m) => m.includes(`${B3} is archived`)))
+rmSync(join(home, 'archived'))
+check('and republishes through it again once it is unarchived', await until(async () => existsSync(join(dir, 'published.json')) && publishedThread() === B3, 60))
+
+// A restart while published.json is cleared must still recover through the same thread.
+writeFileSync(join(home, 'archived'), B3)
+check('the timer clears the setup state again while the thread is archived', await until(async () => !existsSync(join(dir, 'published.json')), 60))
+await Promise.all(disposers.splice(0).map((f) => f()))
+// A query string makes Bun load the module afresh, as a restarted Amp process does.
+const restarted = '../../plugin/index?restarted'
+await (await import(restarted)).default({ registerTool: () => {}, logger: { log: (m: string) => logs.push(m) }, onDispose: (f: () => unknown) => disposers.push(f) } as any)
+rmSync(join(home, 'archived'))
+check('after a restart, the bridge republishes through the same thread once it is unarchived', await until(async () => existsSync(join(dir, 'published.json')) && publishedThread() === B3, 60), calls().slice(-4))
+
+// Upgrading from a version without publish-thread, with published.json naming an archived thread:
+// two restarts later, unarchiving it must still bring the bridge back.
+const B5 = 'T-00000000-0000-0000-0000-0000000000b5'
+await Promise.all(disposers.splice(0).map((f) => f()))
+rmSync(join(dir, 'publish-thread'), { force: true })
+writeFileSync(join(home, 'archived'), B5)
+writeFileSync(join(dir, 'published.json'), JSON.stringify({ url: PORTAL, thread: B5, at: new Date().toISOString() }))
+const start = async (name: string) => (await import(name)).default({ registerTool: () => {}, logger: { log: (m: string) => logs.push(m) }, onDispose: (f: () => unknown) => disposers.push(f) } as any)
+const upgraded = '../../plugin/index?upgraded', upgradedAgain = '../../plugin/index?upgraded-again'
+await start(upgraded)
+check('after an upgrade, timer failures through an archived thread clear the setup state', await until(async () => !existsSync(join(dir, 'published.json')), 60))
+await Promise.all(disposers.splice(0).map((f) => f()))
+await start(upgradedAgain)
+rmSync(join(home, 'archived'))
+check('and a later restart still recovers through that thread once it is unarchived', await until(async () => existsSync(join(dir, 'published.json')) && publishedThread() === B5, 60), calls().slice(-4))
+
+// Without the thread's state, publishing must not go ahead as if the thread were live.
+writeFileSync(join(home, 'export-fails'), '')
+const blind = await publish(B3).catch((e: Error) => e.message)
+check('publishing is refused when the thread cannot be checked', /threads export/.test(String(blind)), blind)
+rmSync(join(home, 'export-fails'))
 
 await Promise.all(disposers.map((f) => f()))
 done()
