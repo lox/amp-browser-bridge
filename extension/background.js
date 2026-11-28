@@ -521,7 +521,7 @@ async function uncovered(target, backendNodeId, ref) {
     if (h.closest?.("label")?.control === this) return true;
     // Synology DSM draws the box as a sprite beside the input, on top of it; a person clicks that.
     // Only DSM's own sprite counts: an empty clickable sibling elsewhere looks no different.
-    return h.parentElement === this.parentElement && !!h.matches?.(".syno-ux-checkbox-icon, .syno-ux-radio-icon");
+    return (this.type === "checkbox" || this.type === "radio") && h.parentElement === this.parentElement && !!h.classList?.contains(`syno-ux-${this.type}-icon`);
   }, {node: hit.backendNodeId});
   if (!inside) throw new Error(`Something else covers ${ref} (a dialog or banner?). Take a new snapshot.`);
   return {x, y};
