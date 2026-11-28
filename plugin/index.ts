@@ -246,8 +246,10 @@ const ref = { type: 'string', description: 'Element ref such as e12 from the lat
 const tab = { type: 'number', description: 'One of your own tabs, from browser_open_tab. Omit for the tab the user lent.' }
 /** Tools that change the page: the extension refuses them on a read-only tab, and the user approves each. */
 const MUTATING = new Set(['click', 'type', 'fill', 'press', 'select', 'navigate'])
-const tools: { name: string; title: string; description: string; properties?: Record<string, object>; required?: string[] }[] = [
-  { name: 'status', title: 'Browser status', description: "Check whether the user's Chrome is connected, which tab is lent, which thread holds it, and how this thread's latest handoff stands (waiting, continued or ended). Call first, and after a browser_handoff call fails. When it returns `next`, tell the user that step and wait for them; don't retry." },
+const tools: { name: string; title: string; description: string; properties?: Record<string, object>; required?: string[]; defer?: boolean }[] = [
+  // The only tool in every thread's tool list, so a thread knows what "I lent you a tab" means
+  // without first searching for the deferred browser_* tools.
+  { name: 'status', title: 'Browser status', defer: false, description: "Amp Browser Bridge: the user can lend you a tab in their own Chrome through its extension. Call this first when the user says they lent (or will lend) you a tab, or asks you to use their browser, their Chrome or a site they're signed in to; don't use agent-browser or a sandbox browser for that. It reports whether their Chrome is connected, which tab is lent and whether it allows actions, which thread holds it, and how this thread's latest handoff stands (waiting, continued or ended). Call it again after a browser_handoff call fails. When it returns `next`, tell the user that step and wait for them; don't retry. The other browser_* tools (snapshot, screenshot, click, type, navigate, handoff and more) may come through tool_search." },
   { name: 'open_tab', title: 'Open tab', description: "Open a URL in a new background tab of your own, in a collapsed Amp tab group, and return its `tab` id for the other tools. Only you can use it; it closes after 10 idle minutes. Needs the user's approval and their \"Let Amp open its own tabs\" setting. Close it with browser_close_tab when done. Like browser_navigate, it reports a bot check or block page in challenge and next.", properties: { url: { type: 'string' } }, required: ['url'] },
   { name: 'close_tab', title: 'Close tab', description: 'Close one of your own tabs.', properties: { tab }, required: ['tab'] },
   { name: 'snapshot', title: 'Read page', description: "Outline of a tab's accessibility tree, with refs (e1, e2, ...) on interactive elements for the action tools; refs expire when the page changes. Work in a loop: read the page, act with the narrowest tool, then read it again to check, since an action that returned may not have worked. If the page is a bot check or block page, the outline starts with what to do instead.", properties: { tab } },
@@ -373,6 +375,7 @@ export default async function (amp: PluginAPI) {
     amp.registerTool({
       name: `browser_${t.name}`,
       title: t.title,
+      defer: t.defer,
       transcriptGroup: { active: 'Using your browser', complete: 'Used your browser' },
       description: `${t.description} Acts in the user's real, signed-in Chrome.`,
       inputSchema: { type: 'object', properties: t.properties ?? {}, required: t.required ?? [], additionalProperties: false },
