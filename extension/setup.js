@@ -49,7 +49,7 @@ function render(s) {
     const {url, thread} = s.published;
     step("published", "ok", "Orbs reach this browser" +
       (url ? html` through <code>${url}</code>` : "") +
-      (thread ? html`. The portal belongs to <a href="https://ampcode.com/threads/${thread}" target="_blank">this thread</a>; keep it unarchived.` : "."));
+      (thread ? html`, published from <a href="https://ampcode.com/threads/${thread}" target="_blank">this thread</a>.` : "."));
   }
 
   const TODO_LEND = `Open the page you want help with, click the Amp Browser Bridge icon in Chrome's toolbar

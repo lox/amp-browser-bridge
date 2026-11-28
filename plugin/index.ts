@@ -103,11 +103,30 @@ async function ampCLI(args: string[], stdin?: string) {
 }
 
 /**
- * Serves the bridge through `thread`'s runner portal and points the orbs' secrets at it. Every
- * portal belongs to a thread; the bridge calls this again on every start to keep the portal
- * registered and the secrets current.
+ * A runner portal published from a directory the runner doesn't serve answers 503 within seconds.
+ * Returns a warning when no runner on this computer serves the bridge's directory, and nothing
+ * when one does or when no runner reports its directories.
  */
-async function publish(thread: string, force: boolean): Promise<Published> {
+async function unservedWarning() {
+  let runners: { workingDirectory: string; serveCwd: boolean; directories: { path: string }[] }[]
+  try {
+    runners = JSON.parse(await ampCLI(['runner', 'list', '--json'])).runners ?? []
+  } catch {
+    return undefined
+  }
+  if (!runners.length) return undefined
+  const served = runners.flatMap((r) => [...(r.serveCwd ? [r.workingDirectory] : []), ...r.directories.map((d) => d.path)])
+  if (served.some((p) => dir === p || dir.startsWith(p.replace(/\/$/, '') + '/'))) return undefined
+  return `No runner on this computer serves ${dir}, so its portal stops answering within seconds. Serve it with \`amp runner dirs add ${dir}\` (or run the runner from a directory that contains it), then publish again.`
+}
+
+/**
+ * Serves the bridge through `thread`'s runner portal and points the orbs' secrets at it. The
+ * portal's hostname depends on the runner and directory, not the thread, and it keeps serving
+ * after the thread is archived or deleted. The bridge calls this on every start and every
+ * REPUBLISH_MS, because after a runner restart the portal answers 503 until it is published again.
+ */
+async function publish(thread: string, force: boolean): Promise<Published & { warning?: string }> {
   // Runner portals get an auto-generated hostname (custom hostnames answer 503 on runners).
   const out = await ampCLI(['orb', 'portal', String(port), '--thread', thread, '--title', 'Browser bridge', '--description', 'Amp browser bridge; requires its token'])
   const url = out.split(/\s+/).filter((w) => w.startsWith('https://')).pop()?.replace(/\/$/, '')
@@ -118,8 +137,11 @@ async function publish(thread: string, force: boolean): Promise<Published> {
   }
   const published = { url, thread, at: new Date().toISOString() }
   writePublished(dir, published)
-  return published
+  return { ...published, warning: await unservedWarning() }
 }
+
+/** How often the bridge publishes its portal again; BROWSER_BRIDGE_REPUBLISH_MS is for tests. */
+const REPUBLISH_MS = Number(process.env.BROWSER_BRIDGE_REPUBLISH_MS ?? 15 * 60_000)
 
 /** Publishes again through the thread the user last published from, if any. */
 async function republish(log: (m: string) => void, stopped: () => boolean) {
@@ -128,8 +150,8 @@ async function republish(log: (m: string) => void, stopped: () => boolean) {
   // The runner may still be starting; give up after about five minutes.
   for (let attempt = 1; !stopped(); attempt++) {
     try {
-      const { url } = await publish(previous.thread, false)
-      log(`republished the bridge at ${url}`)
+      const { url, warning } = await publish(previous.thread, false)
+      log(`republished the bridge at ${url}${warning ? `. ${warning}` : ''}`)
       return
     } catch (error: any) {
       if (attempt === 4) {
@@ -300,6 +322,23 @@ export default async function (amp: PluginAPI) {
   if (mode === 'host') {
     let bridge: ReturnType<typeof startBridge> | null = null
     let stopped = false
+    let keepPublished: Timer | undefined
+    let republishing = false
+    // After a runner restart the portal answers 503 until it is published again, so the process
+    // running the bridge publishes it again on a timer. Same URL each time, so no secrets change.
+    const refresh = async () => {
+      const previous = readPublished(dir)
+      if (!previous || republishing) return
+      republishing = true
+      try {
+        const { warning } = await publish(previous.thread, false)
+        if (warning) amp.logger.log(warning)
+      } catch (error: any) {
+        amp.logger.log(`could not republish the bridge through thread ${previous.thread}: ${error?.message ?? error}`)
+      } finally {
+        republishing = false
+      }
+    }
     // Several Amp processes on one Mac load this plugin; the first to bind the port runs the bridge
     // and the others keep trying, so the bridge survives whichever process owns it exiting.
     const tryStart = () => {
@@ -307,6 +346,7 @@ export default async function (amp: PluginAPI) {
       try {
         bridge = startBridge({ dir, port, log: (m) => amp.logger.log(m) })
         void republish((m) => amp.logger.log(m), () => stopped)
+        keepPublished = setInterval(refresh, REPUBLISH_MS)
       } catch (error: any) {
         if (error?.code !== 'EADDRINUSE') amp.logger.log(`bridge failed to start: ${error?.message ?? error}`)
       }
@@ -316,6 +356,7 @@ export default async function (amp: PluginAPI) {
     amp.onDispose(() => {
       stopped = true
       clearInterval(retry)
+      clearInterval(keepPublished)
       bridge?.stop()
     })
     local = { base: `http://127.0.0.1:${port}`, token: '', portal: false }
@@ -323,18 +364,18 @@ export default async function (amp: PluginAPI) {
     amp.registerTool({
       name: 'browser_bridge_publish',
       title: 'Publish browser bridge',
-      description: "Expose this Mac's browser bridge to the user's orbs: registers this thread's portal for it and stores BROWSER_BRIDGE_URL and BROWSER_BRIDGE_TOKEN as the user's personal Amp secrets. Run it in a thread on the Mac when the user asks to set up or republish the browser bridge. Afterwards the bridge publishes itself again whenever it starts, through the same thread, so tell the user not to archive it.",
+      description: "Expose this Mac's browser bridge to the user's orbs: registers this thread's portal for it and stores BROWSER_BRIDGE_URL and BROWSER_BRIDGE_TOKEN as the user's personal Amp secrets. Run it in a thread on the Mac when the user asks to set up or republish the browser bridge. Afterwards the bridge publishes itself again when it starts and every 15 minutes; archiving this thread doesn't affect the portal. If the result has a warning, tell the user how to fix it.",
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       async execute(_input, ctx) {
         const ok = await ctx.ui.confirm({
           title: 'Publish the browser bridge to your orbs?',
-          message: `This thread's portal will serve the bridge on port ${port}, and your personal Amp secrets BROWSER_BRIDGE_URL and BROWSER_BRIDGE_TOKEN will be updated so new orbs can reach it. Whenever the bridge starts again it re-registers the portal and updates these secrets itself. Only you can open the portal.`,
+          message: `This thread's portal will serve the bridge on port ${port}, and your personal Amp secrets BROWSER_BRIDGE_URL and BROWSER_BRIDGE_TOKEN will be updated so new orbs can reach it. The bridge re-registers the portal when it starts and every 15 minutes, and updates these secrets itself if the URL changes. Only you can open the portal.`,
           confirmButtonText: 'Publish',
           requireHuman: true,
         })
         if (!ok) throw new Error('The user cancelled publishing.')
-        const { url } = await publish(ctx.thread.id, true)
-        return JSON.stringify({ portal_url: url, note: 'New orbs get these secrets when they start; running orbs need `amp orb restart-processes`. The bridge publishes itself again on every start through this thread, so keep it unarchived.' })
+        const { url, warning } = await publish(ctx.thread.id, true)
+        return JSON.stringify({ portal_url: url, ...(warning ? { warning } : {}), note: 'New orbs get these secrets when they start; running orbs need `amp orb restart-processes`. The bridge publishes itself again on every start and every 15 minutes; archiving this thread is fine.' })
       },
     })
 
