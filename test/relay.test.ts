@@ -345,21 +345,27 @@ test('fair-shares sockets across shared NATs, preempts pending hogs, and enforce
   expect(r.stats().globalStreamBytes).toBe(0)
   expect(r.stats().globalPending).toBe(0)
 
-  // Near-limit (255 KB) HTTP envelope forwards cleanly after WS reframing without disconnecting the browser.
+  // Exact boundary HTTP envelope (in the final 8 bytes before 256 KiB, so WS reframing exceeds 262,144 bytes)
+  // forwards cleanly under the 512 KiB WS socket limit without disconnecting the browser.
   const nearLimitSecret = generateSecret()
   const nearLimitRoot = deriveRoot(nearLimitSecret)
   const nearLimitBrowser = await connectFakeBrowser(base, nearLimitSecret, (req) => ({
     status: 200,
     body: JSON.stringify({ len: req.body.length }),
   }))
+  // Measure overhead on an empty body, then pick exact plaintext size so JSON(envelope) lands in [262138, 262144].
+  const probePayload = JSON.stringify(sealRequest(nearLimitRoot, nearLimitBrowser.session.banner, { thread: THREAD, method: 'POST', path: '/call', body: '' }).envelope)
+  const targetCtIncrease = 262_142 - Buffer.byteLength(probePayload)
+  const targetPlainIncrease = Math.floor((targetCtIncrease * 3) / 4)
+  const exactBody = 'P'.repeat(targetPlainIncrease)
   const nearLimitSealed = sealRequest(nearLimitRoot, nearLimitBrowser.session.banner, {
     thread: THREAD,
     method: 'POST',
     path: '/call',
-    body: 'P'.repeat(185_000),
+    body: exactBody,
   })
   const nearLimitPayload = JSON.stringify(nearLimitSealed.envelope)
-  expect(Buffer.byteLength(nearLimitPayload)).toBeGreaterThan(245_000)
+  expect(Buffer.byteLength(nearLimitPayload)).toBeGreaterThanOrEqual(256 * 1024 - 7)
   expect(Buffer.byteLength(nearLimitPayload)).toBeLessThanOrEqual(256 * 1024)
   const nearLimitRes = await fetch(`${base}/forward`, {
     method: 'POST',
@@ -367,6 +373,6 @@ test('fair-shares sockets across shared NATs, preempts pending hogs, and enforce
     body: nearLimitPayload,
   })
   expect(nearLimitRes.status).toBe(200)
-  expect(JSON.parse(nearLimitSealed.openResponse(await nearLimitRes.text())!.body).len).toBe(185_000)
+  expect(JSON.parse(nearLimitSealed.openResponse(await nearLimitRes.text())!.body).len).toBe(exactBody.length)
   nearLimitBrowser.ws.close()
 })

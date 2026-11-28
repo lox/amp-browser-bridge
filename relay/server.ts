@@ -19,6 +19,7 @@ const MAX_UPLOADS_PER_IP = 8
 const MAX_WS_FRAME_BYTES = 64 * 1024
 const MAX_WS_SOCKET_BACKPRESSURE_BYTES = 512 * 1024
 const MAX_GLOBAL_WS_OUTBOUND_BYTES = 16 * 1024 * 1024
+const MAX_CONTROL_RESERVE_BYTES = 1024 * 1024
 const MAX_RES_CHARS = 4 * 1024 * 1024
 const MAX_STREAM_QUEUE_BYTES = 256 * 1024
 const MAX_STREAM_QUEUE_CHUNKS = 32
@@ -206,7 +207,12 @@ export function startRelay(options: RelayOptions = {}) {
       ws.close(1013, 'outbound backpressure')
       return 'dropped'
     }
-    if (!control && globalWsOutboundBytes + byteLen > MAX_GLOBAL_WS_OUTBOUND_BYTES) {
+    const globalLimit = control ? MAX_GLOBAL_WS_OUTBOUND_BYTES + MAX_CONTROL_RESERVE_BYTES : MAX_GLOBAL_WS_OUTBOUND_BYTES
+    if (globalWsOutboundBytes + byteLen > globalLimit) {
+      if (control) {
+        ws.close(1013, 'outbound backpressure')
+        return 'dropped'
+      }
       return 'busy'
     }
     const status = ws.send(frame)
@@ -570,7 +576,9 @@ export function startRelay(options: RelayOptions = {}) {
         }
 
         if (msg?.type === 'ping') {
-          sendWs(ws, JSON.stringify({ type: 'pong' }), true)
+          // Skip redundant pongs while outbound frames are already queued to this browser.
+          if (ws.getBufferedAmount() === 0) sendWs(ws, JSON.stringify({ type: 'pong' }), true)
+          else syncWsOutbound(ws, ws.getBufferedAmount())
           return
         }
 
