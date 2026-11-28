@@ -17,7 +17,7 @@
   const REQ_CONTEXT = "amp-browser-bridge-v3|req";
   const KEYS_INFO = "amp-browser-bridge-v3|keys";
   const REQUEST_WINDOW_MS = 5 * 60_000;
-  const CLOCK_DRIFT_TOLERANCE_MS = 30_000;
+  const CLOCK_ROLLBACK_TOLERANCE_MS = 1000;
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
@@ -125,7 +125,7 @@
     const bPk = base64url(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)));
     const connId = base64url(crypto.getRandomValues(new Uint8Array(16)));
     const sig = await bannerMac(root.auth, connId, bPk);
-    /** reqId -> monotonic timestamp (`monoNow`) when accepted; retained for 2x the clock window. */
+    /** reqId -> effective wall timestamp when accepted; retained for >2x the request window. */
     const seen = new Map();
     let anchorWall = 0;
     let anchorMono = 0;
@@ -141,11 +141,18 @@
         anchorMono = monoNow;
       } else {
         const expectedWall = anchorWall + (monoNow - anchorMono);
-        if (Math.abs(now - expectedWall) > CLOCK_DRIFT_TOLERANCE_MS) {
+        // Backward wall-clock rollback (even after idle monotonic advance) expires the session.
+        if (now + CLOCK_ROLLBACK_TOLERANCE_MS < expectedWall) {
           expired = true;
           return {expired: true};
         }
+        // Forward wall-clock jump (e.g. `performance.now()` paused during macOS sleep) safely re-anchors.
+        if (now > expectedWall) {
+          anchorWall = now;
+          anchorMono = monoNow;
+        }
       }
+      const effectiveNow = Math.max(now, anchorWall + (monoNow - anchorMono));
 
       if (!envelope || typeof envelope !== "object") return null;
       const {req_id: reqId, c_pk: cPk, ct} = envelope;
@@ -172,11 +179,11 @@
       }
 
       if (!plain || typeof plain.at !== "number" || Math.abs(now - plain.at) > REQUEST_WINDOW_MS) return null;
-      for (const [id, seenMono] of seen) {
-        if (monoNow - seenMono > 2 * REQUEST_WINDOW_MS + 60_000) seen.delete(id);
+      for (const [id, seenEffective] of seen) {
+        if (effectiveNow - seenEffective > 2 * REQUEST_WINDOW_MS + 60_000) seen.delete(id);
       }
       if (seen.has(reqId)) return null;
-      seen.set(reqId, monoNow);
+      seen.set(reqId, effectiveNow);
 
       return {
         request: {
