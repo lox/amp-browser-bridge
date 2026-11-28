@@ -17,7 +17,7 @@
   const REQ_CONTEXT = "amp-browser-bridge-v3|req";
   const KEYS_INFO = "amp-browser-bridge-v3|keys";
   const REQUEST_WINDOW_MS = 5 * 60_000;
-  const CLOCK_ROLLBACK_TOLERANCE_MS = 1000;
+  const CLOCK_DRIFT_TOLERANCE_MS = 30_000;
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
@@ -127,19 +127,25 @@
     const sig = await bannerMac(root.auth, connId, bPk);
     /** reqId -> monotonic timestamp (`monoNow`) when accepted; retained for 2x the clock window. */
     const seen = new Map();
-    let maxWallNow = 0;
+    let anchorWall = 0;
+    let anchorMono = 0;
     let lastMonoNow = 0;
     let expired = false;
 
     async function openRequest(envelope, now = Date.now(), monoNow = performance.now()) {
       if (expired) return {expired: true};
-      if (maxWallNow > 0 && now + CLOCK_ROLLBACK_TOLERANCE_MS < maxWallNow) {
-        expired = true;
-        return {expired: true};
-      }
-      if (now > maxWallNow) maxWallNow = now;
       if (monoNow < lastMonoNow) monoNow = lastMonoNow;
       lastMonoNow = monoNow;
+      if (anchorWall === 0) {
+        anchorWall = now;
+        anchorMono = monoNow;
+      } else {
+        const expectedWall = anchorWall + (monoNow - anchorMono);
+        if (Math.abs(now - expectedWall) > CLOCK_DRIFT_TOLERANCE_MS) {
+          expired = true;
+          return {expired: true};
+        }
+      }
 
       if (!envelope || typeof envelope !== "object") return null;
       const {req_id: reqId, c_pk: cPk, ct} = envelope;

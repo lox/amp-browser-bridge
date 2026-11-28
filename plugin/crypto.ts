@@ -104,31 +104,41 @@ function gcmDecrypt(key: Buffer, iv: Buffer, encoded: string, aad: string): Buff
   }
 }
 
-/** Reads an HTTP body up to `maxBytes` so an untrusted reflector cannot exhaust client memory. */
+/** Reads an HTTP body into a bounded buffer up to `maxBytes` without retaining per-fragment arrays. */
 async function readBoundedText(res: Response, maxBytes: number): Promise<string> {
   const declared = Number(res.headers.get('content-length') ?? 0)
-  if (declared > maxBytes) throw new Error(`Reflector response exceeded ${maxBytes} bytes.`)
+  if (declared > maxBytes) {
+    await res.body?.cancel().catch(() => {})
+    throw new Error(`Reflector response exceeded ${maxBytes} bytes.`)
+  }
   if (!res.body) return ''
   const reader = res.body.getReader()
-  const chunks: Uint8Array[] = []
+  let buf = Buffer.allocUnsafe(Math.min(Math.max(declared, 4096), Math.min(maxBytes, 65536)))
   let total = 0
   try {
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
-      if (value) {
-        total += value.byteLength
-        if (total > maxBytes) {
-          await reader.cancel().catch(() => {})
-          throw new Error(`Reflector response exceeded ${maxBytes} bytes.`)
-        }
-        chunks.push(value)
+      if (!value || value.byteLength === 0) continue
+      const nextTotal = total + value.byteLength
+      if (nextTotal > maxBytes) {
+        await reader.cancel().catch(() => {})
+        throw new Error(`Reflector response exceeded ${maxBytes} bytes.`)
       }
+      if (nextTotal > buf.byteLength) {
+        let cap = buf.byteLength
+        while (cap < nextTotal) cap = Math.min(maxBytes, cap * 2)
+        const grown = Buffer.allocUnsafe(cap)
+        buf.copy(grown, 0, 0, total)
+        buf = grown
+      }
+      buf.set(value, total)
+      total = nextTotal
     }
   } finally {
     reader.releaseLock()
   }
-  return Buffer.concat(chunks, total).toString('utf8')
+  return buf.toString('utf8', 0, total)
 }
 
 /**

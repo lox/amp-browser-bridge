@@ -99,10 +99,12 @@ test('rejects replays, expired timestamps, and ciphertexts from an earlier ephem
   const stale = sealRequest(pluginRoot, session1.banner, { at: 10_000_000 - 5 * 60_000 - 1, thread: '', method: 'GET', path: '/status', body: '' })
   expect(await session1.openRequest(stale.envelope, 10_000_000)).toBeNull()
 
-  // Wall-clock rollback >1s expires the session so Chrome rotates `conn_id` instead of risking replay.
-  const rolledBack = sealRequest(pluginRoot, session1.banner, { at: 9_900_000, thread: '', method: 'GET', path: '/status', body: '' })
-  expect(await session1.openRequest(rolledBack.envelope, 9_900_000)).toEqual({ expired: true })
-  expect(await session1.openRequest(rolledBack.envelope, 10_000_000)).toEqual({ expired: true })
+  // Wall-clock drift >30s relative to monotonic time (including an idle backward correction where wall > lastSeenWall)
+  // expires the session so Chrome rotates `conn_id` instead of ever re-accepting a pruned nonce.
+  const idleShifted = sealRequest(pluginRoot, session1.banner, { at: 10_120_000, thread: '', method: 'GET', path: '/status', body: '' })
+  // 12 minutes of monotonic time elapsed (`+720_000`), while wall clock only advanced 2 minutes (`10_120_000`, i.e. 10m backward correction).
+  expect(await session1.openRequest(idleShifted.envelope, 10_120_000, 720_000)).toEqual({ expired: true })
+  expect(await session1.openRequest(idleShifted.envelope, 10_720_000, 720_000)).toEqual({ expired: true })
 
   // Reconnect creates a new ephemeral keypair: captured traffic from session1 cannot be opened by session2,
   // and someone who later learns `secret` still lacks both ephemeral private keys.
