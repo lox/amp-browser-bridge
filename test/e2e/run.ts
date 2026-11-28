@@ -40,6 +40,7 @@ const page = Bun.serve({
   fetch: (req) => {
     const path = new URL(req.url).pathname
     if (path === '/to-store') return Response.redirect('https://chromewebstore.google.com/', 302)
+    if (path === '/no-content') return new Response(null, { status: 204 })
     if (path === '/download') return new Response('a file', { headers: { 'content-type': 'application/octet-stream', 'content-disposition': 'attachment; filename="bridge-test.txt"' } })
     const file = Bun.file(join(pageDir, path === '/' ? 'index.html' : path))
     return file.exists().then((ok) => (ok ? new Response(file) : new Response('not found', { status: 404 })))

@@ -34,6 +34,15 @@ for (const url of ['https://chromewebstore.google.com/detail/x', 'https://chrome
   check('open_tab on a download: no tab left', (await count()) === before && (await agentTabs()).length === 0)
 }
 
+// A 204 leaves the tab "complete" with no page, as a download does until Chrome closes its tab.
+// Catching this every time is what keeps the download check above from racing that close.
+{
+  const before = await count()
+  const r = await call(A, 'open_tab', { url: `${PAGE}/no-content` })
+  check('open_tab on a 204: says no page opened, known outcome', /opened no page.*Amp closed the tab/.test(r.error ?? '') && !r.unknown, r)
+  check('open_tab on a 204: no tab left', (await until(async () => (await count()) === before, 30)) && (await agentTabs()).length === 0, { before, now: await count() })
+}
+
 const opened = await call(A, 'open_tab', { url: `${PAGE}/other.html` })
 const tab = opened.result?.tab
 check('open_tab on a normal page returns its tab', Number.isInteger(tab), opened)

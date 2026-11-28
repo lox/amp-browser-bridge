@@ -1058,13 +1058,16 @@ async function openTab(thread, raw, effects) {
     // The user may have turned the setting off while the tab opened.
     if (!await agentTabsAllowed()) throw new Error("The user turned off \"Let Amp open its own tabs\" while the tab opened.");
     await attach(tab.id);
-    // Wait for the first load, so a snapshot right after sees the page.
+    // Wait for the first load, so a snapshot right after sees the page. A tab whose URL started a
+    // download, or answered without a page (204), says "complete" without ever committing a URL;
+    // Chrome closes the download's tab a moment later, so keep waiting for that.
     for (let i = 0; i < 100; i++) {
       const now = await chrome.tabs.get(tab.id).catch(() => null);
-      if (!now || now.status === "complete") break;
+      if (!now || (now.status === "complete" && now.url)) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     const now = await chrome.tabs.get(tab.id);
+    if (now.status === "complete" && !now.url) throw new Error(`${url} opened no page: it started a download or answered without one.`);
     // A redirect into the Web Store, after the debugger attached to the page before it.
     if (now.url && isWebStore(new URL(now.url))) throw new Error("The tab reached the Web Store.");
     await thaw(tab.id);
