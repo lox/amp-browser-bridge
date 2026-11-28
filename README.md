@@ -97,6 +97,8 @@ Check **Setup and status** in the popup first. Each failing check explains how t
 
 Page tools take an optional `tab` ID from `browser_open_tab`, defaulting to the lent tab. Tools that change the page ask for approval first.
 
+`browser_status` is in every thread's tool list from the start, so telling a thread "I lent you a tab" or "use my browser" is enough; the other tools load through Amp's tool search when needed.
+
 Chrome blocks extensions on Chrome Web Store pages, so tools refuse them and navigating a lent tab there ends the lend.
 
 `main` can be ahead of the latest release. To try unreleased changes, load `extension/` from a checkout of `main`.
