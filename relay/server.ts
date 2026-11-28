@@ -17,7 +17,7 @@ const MAX_REQ_BYTES = 256 * 1024
 const MAX_CONCURRENT_UPLOADS = 64
 const MAX_UPLOADS_PER_IP = 8
 const MAX_WS_FRAME_BYTES = 64 * 1024
-const MAX_WS_SOCKET_BACKPRESSURE_BYTES = 256 * 1024
+const MAX_WS_SOCKET_BACKPRESSURE_BYTES = 512 * 1024
 const MAX_GLOBAL_WS_OUTBOUND_BYTES = 16 * 1024 * 1024
 const MAX_RES_CHARS = 4 * 1024 * 1024
 const MAX_STREAM_QUEUE_BYTES = 256 * 1024
@@ -192,25 +192,30 @@ export function startRelay(options: RelayOptions = {}) {
     globalWsOutboundBytes = Math.max(0, globalWsOutboundBytes + (clamped - prev))
   }
 
-  /** Sends one WebSocket frame while enforcing both per-socket and global outbound buffer ceilings. */
-  function sendWs(ws: ServerWebSocket<SocketData>, frame: string): boolean {
+  /**
+   * Sends one WebSocket frame while enforcing per-socket and global outbound buffer ceilings.
+   * Only a congested socket is closed (`dropped`); global pressure from other sockets rejects
+   * the `/forward` (`busy`) without disconnecting an innocent browser, and tiny control replies
+   * (`registered`, `pong`) always pass unless this socket itself is congested.
+   */
+  function sendWs(ws: ServerWebSocket<SocketData>, frame: string, control = false): 'ok' | 'busy' | 'dropped' {
     const byteLen = Buffer.byteLength(frame)
     const current = ws.getBufferedAmount()
     syncWsOutbound(ws, current)
-    if (
-      current + byteLen > MAX_WS_SOCKET_BACKPRESSURE_BYTES ||
-      globalWsOutboundBytes + byteLen > MAX_GLOBAL_WS_OUTBOUND_BYTES
-    ) {
+    if (current + byteLen > MAX_WS_SOCKET_BACKPRESSURE_BYTES) {
       ws.close(1013, 'outbound backpressure')
-      return false
+      return 'dropped'
+    }
+    if (!control && globalWsOutboundBytes + byteLen > MAX_GLOBAL_WS_OUTBOUND_BYTES) {
+      return 'busy'
     }
     const status = ws.send(frame)
     syncWsOutbound(ws, ws.getBufferedAmount())
     if (status === 0) {
       ws.close(1013, 'outbound dropped')
-      return false
+      return 'dropped'
     }
-    return true
+    return 'ok'
   }
 
   function addBufferedBytes(p: Pending, delta: number) {
@@ -419,7 +424,10 @@ export function startRelay(options: RelayOptions = {}) {
       globalPending++
       addSet(pendingByCallerIp, callerIp, entry)
       signal.addEventListener('abort', () => settlePending(slot, entry), { once: true })
-      if (!sendWs(slot.ws, outboundFrame)) {
+      const sent = sendWs(slot.ws, outboundFrame)
+      if (sent === 'busy') {
+        settlePending(slot, entry, { response: Response.json({ error: 'reflector outbound busy' }, { status: 503 }) })
+      } else if (sent === 'dropped') {
         settlePending(slot, entry, { response: Response.json({ dropped: true }, { status: 502 }) })
       }
     })
@@ -557,12 +565,12 @@ export function startRelay(options: RelayOptions = {}) {
           }
           ws.data.channelId = channelId
           channels.set(channelId, { ws, banner: msg.banner, pending: new Map(), uploads: 0 })
-          sendWs(ws, JSON.stringify({ type: 'registered' }))
+          sendWs(ws, JSON.stringify({ type: 'registered' }), true)
           return
         }
 
         if (msg?.type === 'ping') {
-          sendWs(ws, JSON.stringify({ type: 'pong' }))
+          sendWs(ws, JSON.stringify({ type: 'pong' }), true)
           return
         }
 

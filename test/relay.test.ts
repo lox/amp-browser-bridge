@@ -344,4 +344,29 @@ test('fair-shares sockets across shared NATs, preempts pending hogs, and enforce
   expect(r.stats().activeStreams).toBe(0)
   expect(r.stats().globalStreamBytes).toBe(0)
   expect(r.stats().globalPending).toBe(0)
+
+  // Near-limit (255 KB) HTTP envelope forwards cleanly after WS reframing without disconnecting the browser.
+  const nearLimitSecret = generateSecret()
+  const nearLimitRoot = deriveRoot(nearLimitSecret)
+  const nearLimitBrowser = await connectFakeBrowser(base, nearLimitSecret, (req) => ({
+    status: 200,
+    body: JSON.stringify({ len: req.body.length }),
+  }))
+  const nearLimitSealed = sealRequest(nearLimitRoot, nearLimitBrowser.session.banner, {
+    thread: THREAD,
+    method: 'POST',
+    path: '/call',
+    body: 'P'.repeat(185_000),
+  })
+  const nearLimitPayload = JSON.stringify(nearLimitSealed.envelope)
+  expect(Buffer.byteLength(nearLimitPayload)).toBeGreaterThan(245_000)
+  expect(Buffer.byteLength(nearLimitPayload)).toBeLessThanOrEqual(256 * 1024)
+  const nearLimitRes = await fetch(`${base}/forward`, {
+    method: 'POST',
+    headers: { 'x-bridge-gate': nearLimitRoot.gate, 'content-type': 'application/json', 'fly-client-ip': '198.51.100.44' },
+    body: nearLimitPayload,
+  })
+  expect(nearLimitRes.status).toBe(200)
+  expect(JSON.parse(nearLimitSealed.openResponse(await nearLimitRes.text())!.body).len).toBe(185_000)
+  nearLimitBrowser.ws.close()
 })
