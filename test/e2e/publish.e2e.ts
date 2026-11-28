@@ -69,5 +69,10 @@ check('no warning when no runner reports its directories', (await publish()).war
 runners([`${dir}-other`])
 check('a sibling directory with the same prefix does not count as served', (await publish()).warning !== undefined)
 
+// A startup republish that fails four times removes published.json; the timer must still recover.
+rmSync(join(dir, 'published.json'))
+const before = portals().length
+check('after published.json is cleared, the timer republishes and records it again', await until(async () => portals().length > before && readFileSync(join(dir, 'published.json'), 'utf8').includes(PORTAL), 60), portals().length - before)
+
 await Promise.all(disposers.map((f) => f()))
 done()

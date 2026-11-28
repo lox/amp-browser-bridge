@@ -326,15 +326,19 @@ export default async function (amp: PluginAPI) {
     let republishing = false
     // After a runner restart the portal answers 503 until it is published again, so the process
     // running the bridge publishes it again on a timer. Same URL each time, so no secrets change.
+    // A failed startup republish clears published.json so the setup page says so; the timer keeps
+    // the thread it started with and goes on trying, which turns the page green again once it works.
+    let lastThread = readPublished(dir)?.thread
     const refresh = async () => {
-      const previous = readPublished(dir)
-      if (!previous || republishing) return
+      const thread = readPublished(dir)?.thread ?? lastThread
+      if (!thread || republishing) return
+      lastThread = thread
       republishing = true
       try {
-        const { warning } = await publish(previous.thread, false)
+        const { warning } = await publish(thread, false)
         if (warning) amp.logger.log(warning)
       } catch (error: any) {
-        amp.logger.log(`could not republish the bridge through thread ${previous.thread}: ${error?.message ?? error}`)
+        amp.logger.log(`could not republish the bridge through thread ${thread}: ${error?.message ?? error}`)
       } finally {
         republishing = false
       }
