@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Amp Browser Bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "minimum_chrome_version": "116",
   "description": "Lend a Chrome tab to your Amp threads, or let them open their own. They read pages and, with your approval, click and type.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtXJGIlkr9MQ8ZVFBqG7Ead4vhK5ecNczzDhn7sPnkX1GcndVFDGZ6E8pYzLcvenTPBO9ADe9ZnVDkx+8swOgjymvts4M7dQAaG51bmGUuw9Vd3sV9i01OLBtXG2FBXkjqWxw2oWQwk23ftls9wdq7TVXjSROJtGaf5HGfICSxqs6ryfOySXZQQqEZMQRX0evGkMW01fP80PXoxa1nXh1OhdmRiZl9ZRe1odIbG6fZqlb2FKALdhbAlgwDZzLz539ob2wwSNaLwTjQU62jC0mHh2OzoNga3k8/ePGSNicCYegbDxLmkRzrFuAkk5Lu5+27LsVrMmpA+E1NnVUzDTbZwIDAQAB",
