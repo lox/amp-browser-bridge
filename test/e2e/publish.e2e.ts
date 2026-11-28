@@ -122,6 +122,22 @@ await (await import(restarted)).default({ registerTool: () => {}, logger: { log:
 rmSync(join(home, 'archived'))
 check('after a restart, the bridge republishes through the same thread once it is unarchived', await until(async () => existsSync(join(dir, 'published.json')) && publishedThread() === B3, 60), calls().slice(-4))
 
+// Upgrading from a version without publish-thread, with published.json naming an archived thread:
+// two restarts later, unarchiving it must still bring the bridge back.
+const B5 = 'T-00000000-0000-0000-0000-0000000000b5'
+await Promise.all(disposers.splice(0).map((f) => f()))
+rmSync(join(dir, 'publish-thread'), { force: true })
+writeFileSync(join(home, 'archived'), B5)
+writeFileSync(join(dir, 'published.json'), JSON.stringify({ url: PORTAL, thread: B5, at: new Date().toISOString() }))
+const start = async (name: string) => (await import(name)).default({ registerTool: () => {}, logger: { log: (m: string) => logs.push(m) }, onDispose: (f: () => unknown) => disposers.push(f) } as any)
+const upgraded = '../../plugin/index?upgraded', upgradedAgain = '../../plugin/index?upgraded-again'
+await start(upgraded)
+check('after an upgrade, timer failures through an archived thread clear the setup state', await until(async () => !existsSync(join(dir, 'published.json')), 60))
+await Promise.all(disposers.splice(0).map((f) => f()))
+await start(upgradedAgain)
+rmSync(join(home, 'archived'))
+check('and a later restart still recovers through that thread once it is unarchived', await until(async () => existsSync(join(dir, 'published.json')) && publishedThread() === B5, 60), calls().slice(-4))
+
 // Without the thread's state, publishing must not go ahead as if the thread were live.
 writeFileSync(join(home, 'export-fails'), '')
 const blind = await publish(B3).catch((e: Error) => e.message)

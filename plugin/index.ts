@@ -150,8 +150,7 @@ async function publishNow(thread: string, force: boolean): Promise<Published & {
   }
   const published = { url, thread, at: new Date().toISOString() }
   writePublished(dir, published)
-  lastThread = thread
-  writeFileSync(lastThreadFile, thread + '\n', { mode: 0o600 })
+  rememberThread(thread)
   return { ...published, warning: await unservedWarning(info.env?.initial?.runnerID) }
 }
 
@@ -161,6 +160,10 @@ async function publishNow(thread: string, force: boolean): Promise<Published & {
  */
 const lastThreadFile = join(dir, 'publish-thread')
 let lastThread: string | undefined = existsSync(lastThreadFile) ? readFileSync(lastThreadFile, 'utf8').trim() || undefined : undefined
+function rememberThread(thread: string) {
+  lastThread = thread
+  writeFileSync(lastThreadFile, thread + '\n', { mode: 0o600 })
+}
 let publishing: Promise<unknown> = Promise.resolve()
 
 /**
@@ -182,7 +185,9 @@ const REPUBLISH_MS = Number(process.env.BROWSER_BRIDGE_REPUBLISH_MS ?? 15 * 60_0
 
 /** Publishes again through the thread the user last published from, if any. */
 async function republish(log: (m: string) => void, stopped: () => boolean) {
-  lastThread = readPublished(dir)?.thread ?? lastThread
+  // Recorded before trying, so a bridge from before publish-thread existed keeps its thread too.
+  const previous = readPublished(dir)?.thread
+  if (previous) rememberThread(previous)
   if (!lastThread) return
   // The runner may still be starting; give up after about five minutes.
   for (let attempt = 1; !stopped(); attempt++) {
