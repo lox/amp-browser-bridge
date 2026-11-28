@@ -509,9 +509,9 @@ async function uncovered(target, backendNodeId, ref) {
   const q = model.content;
   const x = (q[0] + q[2] + q[4] + q[6]) / 4;
   const y = (q[1] + q[3] + q[5] + q[7]) / 4;
-  // The box is in viewport coordinates, but getNodeForLocation takes the document's: add the scroll,
-  // or on a scrolled page the check looks at whatever is scrollY above the node.
-  const {cssLayoutViewport: view} = await cdp(target, "Page.getLayoutMetrics");
+  // The box is relative to the visual viewport, but getNodeForLocation takes document coordinates:
+  // add where that viewport is, or on a scrolled or pinch-zoomed page the check looks elsewhere.
+  const {cssVisualViewport: view} = await cdp(target, "Page.getLayoutMetrics");
   const hit = await cdp(target, "DOM.getNodeForLocation", {x: Math.round(x + view.pageX), y: Math.round(y + view.pageY), includeUserAgentShadowDOM: false, ignorePointerEventsNone: false});
   const inside = await isolated(target, backendNodeId, function (h) {
     for (let n = h; n; n = n.parentNode || n.host) if (n === this) return true;

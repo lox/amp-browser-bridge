@@ -1,5 +1,5 @@
 // Forms are long, and sites often scroll smoothly. Acting on a field must work wherever the page is
-// scrolled to, and browser_scroll must move the page before it returns.
+// scrolled or zoomed to, and browser_scroll must move the page before it returns.
 import { PAGE, api, call, cdp, check, done, evaluate, message, pageTarget, pair, refOf, showTab, until, wakeWorker } from './lib'
 
 const A = 'T-00000000-0000-0000-0000-00000000000a'
@@ -30,7 +30,11 @@ check('scroll has moved a smooth-scrolling page when it returns', scrolled.resul
 await evaluate(page, `window.scrollTo({top: 40, behavior: 'instant'})`)
 const visible = await call(A, 'type', { ref: refOf((await call(A, 'snapshot')).result, /textbox "Name"/), text: 'Amp' })
 check('type into a visible field of a page scrolled a little', visible.result?.typed && (await value('name-field')) === 'Amp', visible)
+// Pinch zoom (a Mac trackpad) moves the visual viewport away from the layout viewport.
+await page('Input.synthesizePinchGesture', { x: 200, y: 100, scaleFactor: 2, relativeSpeed: 2000 })
+const zoomed = await call(A, 'type', { ref: refOf((await call(A, 'snapshot')).result, /textbox "Name"/), text: 'Zoomed' })
+check('type into a visible field of a pinch-zoomed page', zoomed.result?.typed && (await value('name-field')) === 'Zoomed', zoomed)
 await evaluate(page, `document.getElementById('overlay').style.display = 'block'`)
 const covered = await call(A, 'type', { ref: refOf((await call(A, 'snapshot')).result, /textbox "Name"/), text: 'Overlay' })
-check('type refused when an overlay covers the field of a scrolled page', /covers/.test(covered.error ?? '') && (await value('name-field')) === 'Amp', covered)
+check('type refused when an overlay covers the field of a scrolled page', /covers/.test(covered.error ?? '') && (await value('name-field')) === 'Zoomed', covered)
 done()
