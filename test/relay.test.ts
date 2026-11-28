@@ -191,11 +191,13 @@ test('disconnect mid-flight returns 502 dropped, and unresponsive browser times 
   expect(await r2.json()).toEqual({ dropped: true })
 })
 
-test('streams multi-chunk responses without server buffering and isolates per-source pending quotas', async () => {
+test('fair-shares sockets across shared NATs, preempts pending hogs, and enforces exact pull-stream byte budgets', async () => {
   const { r, base } = setupRelay(2000, {
     maxUnregistered: 2,
-    maxSocketsPerIp: 4,
-    maxPendingPerIp: 2,
+    maxTotalSockets: 6,
+    maxGlobalPending: 3,
+    maxGlobalStreamBytes: 180_000,
+    maxStreamQueueBytes: 250_000,
     maxResChars: 220_000,
     trustFlyHeader: true,
   })
@@ -222,45 +224,38 @@ test('streams multi-chunk responses without server buffering and isolates per-so
   idle2.close()
   await Bun.sleep(30)
 
-  // Per-IP socket limit applies across registered sockets, while other IPs remain unaffected.
-  const regSockets: WebSocket[] = []
-  for (let i = 0; i < 4; i++) {
-    const s = generateSecret()
-    const root = await Browser.deriveRoot(s)
-    const sess = await Browser.createSession(root)
-    const ws = new WebSocket(base.replace('http', 'ws') + '/ext', { headers: { origin: ORIGIN, 'fly-client-ip': '198.51.100.7' } } as any)
-    regSockets.push(ws)
-    stops.push(() => ws.close())
-    const done = new Promise<void>((res) => (ws.onmessage = (e) => JSON.parse(String(e.data)).type === 'registered' && res()))
-    ws.onopen = () => ws.send(JSON.stringify({ type: 'register', gate: sess.gate, banner: sess.banner }))
-    await done
+  // Shared-NAT users can use all available capacity (all 6 sockets on one IP succeed when idle),
+  // AND when full, a new user on another IP evicts the heaviest IP's oldest socket instead of failing!
+  const natBrowsers = []
+  for (let i = 0; i < 6; i++) {
+    natBrowsers.push(await connectFakeBrowser(base, generateSecret(), undefined, '198.51.100.7'))
   }
-  expect((await fetch(`${base}/ext`, { headers: { origin: ORIGIN, 'fly-client-ip': '198.51.100.7' } })).status).toBe(429)
-  for (const ws of regSockets) ws.close()
+  expect(r.stats().totalSockets).toBe(6)
+  // Another IP arrives while all 6 slots are held by 198.51.100.7 -> evicts 1 of 198.51.100.7's sockets (1013) and succeeds!
+  const newcomer = await connectFakeBrowser(base, generateSecret(), () => ({ status: 200, body: '{"ok":true}' }), '198.51.100.99')
+  expect(await natBrowsers[0]!.closed).toBe(1013)
+  expect(r.stats().totalSockets).toBe(6)
+  for (const b of natBrowsers.slice(1)) b.ws.close()
+  newcomer.ws.close()
   await Bun.sleep(30)
+  expect(r.stats().totalSockets).toBe(0)
 
-  // One source saturating its pending quota (maxPendingPerIp: 2) gets 429 without blocking another user's IP.
+  // Filling maxGlobalPending (3) from a heavy caller IP is preempted when a fresh caller IP sends /forward!
   const hogSecret = generateSecret()
   const hogRoot = deriveRoot(hogSecret)
   const hogBrowser = await connectFakeBrowser(base, hogSecret, undefined, '192.0.2.99') // never replies
-  const hogReqs = [1, 2].map(() => {
+  const hogReqs = [1, 2, 3].map(() => {
     const s = sealRequest(hogRoot, hogBrowser.session.banner, { thread: THREAD, method: 'POST', path: '/call', body: '{}' })
     return fetch(`${base}/forward`, {
       method: 'POST',
       headers: { 'x-bridge-gate': hogRoot.gate, 'content-type': 'application/json', 'fly-client-ip': '192.0.2.99' },
       body: JSON.stringify(s.envelope),
-    }).catch(() => null)
+    })
   })
   await Bun.sleep(30)
-  const hogExtra = sealRequest(hogRoot, hogBrowser.session.banner, { thread: THREAD, method: 'POST', path: '/call', body: '{}' })
-  const hogBlocked = await fetch(`${base}/forward`, {
-    method: 'POST',
-    headers: { 'x-bridge-gate': hogRoot.gate, 'content-type': 'application/json', 'fly-client-ip': '192.0.2.99' },
-    body: JSON.stringify(hogExtra.envelope),
-  })
-  expect(hogBlocked.status).toBe(429)
+  expect(r.stats().globalPending).toBe(3)
 
-  // Meanwhile, a legitimate user on another IP streams a >140 KB screenshot response cleanly through ReadableStream.
+  // Legitimate user on another IP preempts one of 192.0.2.99's stalled waits and streams a >140 KB screenshot cleanly!
   const secret = generateSecret()
   const root = deriveRoot(secret)
   const bigImage = 'J'.repeat(140_000)
@@ -280,18 +275,20 @@ test('streams multi-chunk responses without server buffering and isolates per-so
     body: JSON.stringify(sealed.envelope),
   })
   expect(res.status).toBe(200)
+  expect((await hogReqs[0]!).status).toBe(503)
   const ct = await res.text()
   const opened = sealed.openResponse(ct)
   expect(JSON.parse(opened!.body).result.data).toBe(bigImage)
   expect(browser.wireFrames.filter((f) => f.includes('"res_part"')).length).toBeGreaterThanOrEqual(4)
   expect(r.stats().activeStreams).toBe(0)
+  expect(r.stats().globalStreamBytes).toBe(0)
 
   hogBrowser.ws.close()
   await Promise.allSettled(hogReqs)
   await Bun.sleep(30)
   expect(r.stats().globalPending).toBe(0)
 
-  // Oversized streamed response (> maxResChars) aborts the stream mid-transfer so the client rejects the truncated ciphertext.
+  // Oversized streamed response (> maxResChars) terminates cleanly and returns globalStreamBytes to 0.
   const secret2 = generateSecret()
   const root2 = deriveRoot(secret2)
   const tooBigBrowser = await connectFakeBrowser(base, secret2, () => ({
@@ -313,5 +310,6 @@ test('streams multi-chunk responses without server buffering and isolates per-so
   }
   expect(abortedOrInvalid).toBe(true)
   expect(r.stats().activeStreams).toBe(0)
+  expect(r.stats().globalStreamBytes).toBe(0)
   expect(r.stats().globalPending).toBe(0)
 })
