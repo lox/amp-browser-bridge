@@ -55,7 +55,37 @@ version you upload includes that feature; otherwise leave them out.
     [Moving to the store's ID](#moving-to-the-stores-id). Merge it once the listing is live.
 11. Tell people on the unpacked build how to move, using the steps in the same section.
 
-## Moving to the store's ID
+## Automating releases
+
+`scripts/store.ts` uploads, submits and checks a version through the
+[Chrome Web Store API](https://developer.chrome.com/docs/webstore/using-api), so a thread can do
+steps 3, 4 and 9 for a new version and say where review stands. The API can't create the item or
+edit the listing; those stay in the dashboard.
+
+**Set up once:**
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), pick or create a project,
+   enable the **Chrome Web Store API**, and create a service account with no roles. Create a JSON
+   key for it.
+2. In the [developer dashboard](https://chrome.google.com/webstore/devconsole), open **Account**
+   and add the service account's email. A publisher can have only one.
+3. Store the JSON key as the personal Amp secret `CWS_SERVICE_ACCOUNT`, and the publisher ID (the
+   long ID after `/devconsole/` in the dashboard's address bar) as the environment variable
+   `CWS_PUBLISHER_ID`. Running orbs need `amp orb restart-processes` to see them.
+
+**Release a version** after it is tagged, from an up-to-date `main`:
+
+```sh
+bun run release --no-key
+bun run store upload     # dist/amp-browser-bridge-<version>-no-key.zip becomes the draft
+bun run store publish    # submit for review, staged: it waits for you once approved
+bun run store status     # review state and version of the published and submitted revisions
+bun run store publish    # once status says STAGED: publish it
+```
+
+`bun run store publish --auto` publishes as soon as the review passes instead.
+
+
 
 The store assigns its own ID. The private key behind today's unpacked ID,
 `goknnphohomgekkahpdiphdfladfnmoc`, was not kept, so the listing can't reuse it. Two things depend
