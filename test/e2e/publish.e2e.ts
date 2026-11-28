@@ -1,7 +1,7 @@
 // Runs the real plugin in its host role with a fake `amp` on PATH: the bridge republishes its
 // portal on start and on a timer, and publishing warns when no runner serves its directory. The
 // plugin reads HOME when it loads, so this script runs itself again with its own HOME and port.
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { check, done, until } from './lib'
@@ -15,11 +15,15 @@ if (!process.env.PUBLISH_E2E_HOME) {
   mkdirSync(join(home, '.amp-browser-bridge'), { recursive: true })
   mkdirSync(bin)
   // Answers like the real CLI: `orb portal` prints the URL, `runner list --json` prints $HOME/runners.json,
-  // and every thread runs on the runner "mac".
+  // and every thread runs on the runner "mac". `orb portal` fails while $HOME/fail exists, and takes
+  // a second for the thread named in $HOME/slow.
   writeFileSync(join(bin, 'amp'), `#!/bin/sh
 echo "$PWD $*" >> "$HOME/amp.log"
 case "$1 $2" in
-  "orb portal") echo "Portal: ${PORTAL}/" ;;
+  "orb portal")
+    [ -f "$HOME/fail" ] && exit 1
+    [ "$5" = "$(cat "$HOME/slow" 2>/dev/null)" ] && sleep 1
+    echo "Portal: ${PORTAL}/" ;;
   "runner list") cat "$HOME/runners.json" ;;
   "threads export") echo '{"env":{"initial":{"runnerID":"mac"}}}' ;;
   "secrets set") cat > /dev/null ;;
@@ -42,7 +46,8 @@ const dir = join(home, '.amp-browser-bridge')
 const runner = (runnerId: string, served: string[]) => ({ runnerId, workingDirectory: served[0], serveCwd: true, directories: served.slice(1).map((path) => ({ path })) })
 const runners = (served: string[], ...others: ReturnType<typeof runner>[]) => writeFileSync(join(home, 'runners.json'), JSON.stringify({ runners: [runner('mac', served), ...others] }))
 const calls = () => readFileSync(join(home, 'amp.log'), 'utf8').trim().split('\n')
-const portals = () => calls().filter((c) => c === `${dir} orb portal 19979 --thread ${THREAD} --title Browser bridge --description Amp browser bridge; requires its token`)
+const portals = (thread = THREAD) => calls().filter((c) => c === `${dir} orb portal 19979 --thread ${thread} --title Browser bridge --description Amp browser bridge; requires its token`)
+const publishedThread = () => JSON.parse(readFileSync(join(dir, 'published.json'), 'utf8')).thread
 runners(['/elsewhere'])
 
 const logs: string[] = []
@@ -57,7 +62,8 @@ check('republishing the same URL leaves the secrets alone', !calls().some((c) =>
 check('republishing warns when no runner serves the bridge directory', logs.some((m) => m.includes(`amp runner dirs add --runner-id mac '${dir}'`)), logs)
 
 const dialogs: any[] = []
-const publish = async () => JSON.parse(await tools.get('browser_bridge_publish').execute({}, { thread: { id: 'T-00000000-0000-0000-0000-0000000000b2' }, ui: { confirm: async (o: any) => (dialogs.push(o), true) } }))
+const B2 = 'T-00000000-0000-0000-0000-0000000000b2'
+const publish = async (thread = B2) => JSON.parse(await tools.get('browser_bridge_publish').execute({}, { thread: { id: thread }, ui: { confirm: async (o: any) => (dialogs.push(o), true) } }))
 const unserved = await publish()
 check('publish returns the portal URL and the unserved warning', unserved.portal_url === PORTAL && unserved.warning?.includes(`amp runner dirs add --runner-id mac '${dir}'`), unserved)
 // A timer republish racing this write may set them again, so check that both were set, not how often.
@@ -75,10 +81,22 @@ check('a sibling directory with the same prefix does not count as served', (awai
 runners(['/elsewhere'], runner('other', [home]))
 check('another runner serving it does not hide the warning for the thread\'s own runner', (await publish()).warning?.includes('runner mac'))
 
-// A startup republish that fails four times removes published.json; the timer must still recover.
-rmSync(join(dir, 'published.json'))
-const before = portals().length
-check('after published.json is cleared, the timer republishes and records it again', await until(async () => portals().length > before && readFileSync(join(dir, 'published.json'), 'utf8').includes(PORTAL), 60), portals().length - before)
+// A timer republish still running when the user publishes from another thread must not win.
+writeFileSync(join(home, 'slow'), B2)
+const slowBefore = portals(B2).length
+check('a timer republish through the last thread starts', await until(async () => portals(B2).length > slowBefore, 30))
+const B3 = 'T-00000000-0000-0000-0000-0000000000b3'
+await publish(B3)
+await Bun.sleep(1500)
+check('an explicit publish during a timer republish keeps its thread', publishedThread() === B3, publishedThread())
+rmSync(join(home, 'slow'))
+
+// While the runner is down, timer republishes fail: the setup page must say so, and the timer must
+// recover through the same thread once the runner is back.
+writeFileSync(join(home, 'fail'), '')
+check('failing timer republishes clear published.json, so the setup page asks to publish', await until(async () => !existsSync(join(dir, 'published.json')), 60))
+rmSync(join(home, 'fail'))
+check('the timer then republishes through the same thread and records it again', await until(async () => publishedThread() === B3, 60))
 
 await Promise.all(disposers.map((f) => f()))
 done()

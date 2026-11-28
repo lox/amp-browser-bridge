@@ -134,7 +134,7 @@ async function unservedWarning(thread: string) {
  * after the thread is archived or deleted. The bridge calls this on every start and every
  * REPUBLISH_MS, because after a runner restart the portal answers 503 until it is published again.
  */
-async function publish(thread: string, force: boolean): Promise<Published & { warning?: string }> {
+async function publishNow(thread: string, force: boolean): Promise<Published & { warning?: string }> {
   // Runner portals get an auto-generated hostname (custom hostnames answer 503 on runners).
   const out = await ampCLI(['orb', 'portal', String(port), '--thread', thread, '--title', 'Browser bridge', '--description', 'Amp browser bridge; requires its token'])
   const url = out.split(/\s+/).filter((w) => w.startsWith('https://')).pop()?.replace(/\/$/, '')
@@ -145,7 +145,26 @@ async function publish(thread: string, force: boolean): Promise<Published & { wa
   }
   const published = { url, thread, at: new Date().toISOString() }
   writePublished(dir, published)
+  lastThread = thread
   return { ...published, warning: await unservedWarning(thread) }
+}
+
+/** The thread last published through. It outlives a cleared published.json, so the timer can recover. */
+let lastThread: string | undefined
+let publishing: Promise<unknown> = Promise.resolve()
+
+/**
+ * Publishes one at a time, so a timer republish can't finish after a newer explicit publish and
+ * undo it. Without a thread it uses the one last published through, chosen once its turn comes.
+ */
+function publish(thread: string | undefined, force: boolean) {
+  const run = publishing.then(() => {
+    const through = thread ?? readPublished(dir)?.thread ?? lastThread
+    if (!through) throw new Error('The bridge has never been published.')
+    return publishNow(through, force)
+  })
+  publishing = run.catch(() => {})
+  return run
 }
 
 /** How often the bridge publishes its portal again; BROWSER_BRIDGE_REPUBLISH_MS is for tests. */
@@ -155,10 +174,11 @@ const REPUBLISH_MS = Number(process.env.BROWSER_BRIDGE_REPUBLISH_MS ?? 15 * 60_0
 async function republish(log: (m: string) => void, stopped: () => boolean) {
   const previous = readPublished(dir)
   if (!previous) return
+  lastThread = previous.thread
   // The runner may still be starting; give up after about five minutes.
   for (let attempt = 1; !stopped(); attempt++) {
     try {
-      const { url, warning } = await publish(previous.thread, false)
+      const { url, warning } = await publish(undefined, false)
       log(`republished the bridge at ${url}${warning ? `. ${warning}` : ''}`)
       return
     } catch (error: any) {
@@ -332,21 +352,21 @@ export default async function (amp: PluginAPI) {
     let stopped = false
     let keepPublished: Timer | undefined
     let republishing = false
+    let failures = 0
     // After a runner restart the portal answers 503 until it is published again, so the process
     // running the bridge publishes it again on a timer. Same URL each time, so no secrets change.
-    // A failed startup republish clears published.json so the setup page says so; the timer keeps
-    // the thread it started with and goes on trying, which turns the page green again once it works.
-    let lastThread = readPublished(dir)?.thread
+    // After two failures in a row it clears published.json, so the setup page asks to publish
+    // again, and keeps trying through the same thread, which turns the page green once it works.
     const refresh = async () => {
-      const thread = readPublished(dir)?.thread ?? lastThread
-      if (!thread || republishing) return
-      lastThread = thread
+      if (republishing || (!lastThread && !readPublished(dir))) return
       republishing = true
       try {
-        const { warning } = await publish(thread, false)
+        const { warning } = await publish(undefined, false)
+        failures = 0
         if (warning) amp.logger.log(warning)
       } catch (error: any) {
-        amp.logger.log(`could not republish the bridge through thread ${thread}: ${error?.message ?? error}`)
+        amp.logger.log(`could not republish the bridge through thread ${lastThread}: ${error?.message ?? error}`)
+        if (++failures === 2) writePublished(dir, null)
       } finally {
         republishing = false
       }
