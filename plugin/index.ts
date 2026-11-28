@@ -1,5 +1,5 @@
 import type { PluginAPI, PluginToolContext } from '@ampcode/plugin'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { DEFAULT_PORT, readPublished, setupPageID, signRequest, startBridge, tokenFile, verifyResponse, writePublished, type Published } from './host'
@@ -151,11 +151,16 @@ async function publishNow(thread: string, force: boolean): Promise<Published & {
   const published = { url, thread, at: new Date().toISOString() }
   writePublished(dir, published)
   lastThread = thread
+  writeFileSync(lastThreadFile, thread + '\n', { mode: 0o600 })
   return { ...published, warning: await unservedWarning(info.env?.initial?.runnerID) }
 }
 
-/** The thread last published through. It outlives a cleared published.json, so the timer can recover. */
-let lastThread: string | undefined
+/**
+ * The thread last published through. It outlives a cleared published.json, in memory and in a file,
+ * so the timer can recover once the thread is unarchived or the runner is back, even after a restart.
+ */
+const lastThreadFile = join(dir, 'publish-thread')
+let lastThread: string | undefined = existsSync(lastThreadFile) ? readFileSync(lastThreadFile, 'utf8').trim() || undefined : undefined
 let publishing: Promise<unknown> = Promise.resolve()
 
 /**
@@ -177,9 +182,8 @@ const REPUBLISH_MS = Number(process.env.BROWSER_BRIDGE_REPUBLISH_MS ?? 15 * 60_0
 
 /** Publishes again through the thread the user last published from, if any. */
 async function republish(log: (m: string) => void, stopped: () => boolean) {
-  const previous = readPublished(dir)
-  if (!previous) return
-  lastThread = previous.thread
+  lastThread = readPublished(dir)?.thread ?? lastThread
+  if (!lastThread) return
   // The runner may still be starting; give up after about five minutes.
   for (let attempt = 1; !stopped(); attempt++) {
     try {
@@ -188,7 +192,7 @@ async function republish(log: (m: string) => void, stopped: () => boolean) {
       return
     } catch (error: any) {
       if (attempt === 4) {
-        log(`could not republish the bridge through thread ${previous.thread}: ${error?.message ?? error}`)
+        log(`could not republish the bridge through thread ${lastThread}: ${error?.message ?? error}`)
         // Tell the setup page, so it asks the user to publish again from a thread on the Mac.
         writePublished(dir, null)
         return

@@ -112,6 +112,16 @@ check('the timer stops republishing through a thread once it is archived', await
 rmSync(join(home, 'archived'))
 check('and republishes through it again once it is unarchived', await until(async () => existsSync(join(dir, 'published.json')) && publishedThread() === B3, 60))
 
+// A restart while published.json is cleared must still recover through the same thread.
+writeFileSync(join(home, 'archived'), B3)
+check('the timer clears the setup state again while the thread is archived', await until(async () => !existsSync(join(dir, 'published.json')), 60))
+await Promise.all(disposers.splice(0).map((f) => f()))
+// A query string makes Bun load the module afresh, as a restarted Amp process does.
+const restarted = '../../plugin/index?restarted'
+await (await import(restarted)).default({ registerTool: () => {}, logger: { log: (m: string) => logs.push(m) }, onDispose: (f: () => unknown) => disposers.push(f) } as any)
+rmSync(join(home, 'archived'))
+check('after a restart, the bridge republishes through the same thread once it is unarchived', await until(async () => existsSync(join(dir, 'published.json')) && publishedThread() === B3, 60), calls().slice(-4))
+
 // Without the thread's state, publishing must not go ahead as if the thread were live.
 writeFileSync(join(home, 'export-fails'), '')
 const blind = await publish(B3).catch((e: Error) => e.message)
